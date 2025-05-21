@@ -1,0 +1,1144 @@
+---
+title: "2022_09_05_Rotterdam_flight"
+author: "Xin Tong"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: yes
+    number_sections: yes
+  html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+    code_folding: hide
+  word_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.width = 15, fig.height = 12, fig.align = "center")
+library(ggplot2) # package for plotting
+library(RColorBrewer)
+library(ggmap)
+library(ggforce)  # facet_zoom
+library(ggpubr) #stat_regline_equation
+library(gridExtra) #grid.arrange
+library(grid)
+library(gtable) #gtable_filter
+library(reshape2)
+library(dplyr)
+library(rWind) # uv2ds     derive the wind speed and direction
+library(suncalc)  # getsunlighttime
+library(geosphere) # calculate the distance with the input of the latitude and longitude
+library(plotly)
+sapply(list.files(pattern="[.]R$", path="c:/Users/xin09/Dropbox/xin/Rscripts/functions", full.names=TRUE), source)
+
+```
+
+
+
+```{r load data and flag vertical profiles and horizontal transects} 
+
+# load data
+flight <- '0905'
+wdir <- "D:/1 phd studies/1 data/Rotterdam_campaign_2022/"
+
+data <- read.csv(paste0(wdir, flight, "/AirCore/AirCore_retrieval/AirCore_N2O_CO_CO2_CH4_CO_2022", flight, ".csv"))
+
+data <- mutate(data,   p.H2O = H2O/18*8.3145*Tair/100,  #unit:hPa/mbar
+pot = Tair*(1000/Ps)^0.286, ws=rWind::uv2ds(U,V)[,2], wd=rWind::uv2ds(U,V)[,1])#;names(data)
+data <- mutate(data, vir.pot = pot*(1+0.61*p.H2O/1000))
+data <- data.frame(date = ISOdate(data$yyyy, data$mm, data$dd, data$hh, data$min, data$sec, tz='UTC'),data)
+
+# The distance per degree of latitude and longitude
+R=6371000
+per.lat <- pi*R/180
+per.lon <- pi*R/180*cos(mean(data$lat)*pi/180)
+
+# SMOOTH COS
+gaussian <- gau.sm(data, 50, 'COS.ac.ppt')
+data <- merge(data, gaussian[,-3], by='time'); names(data)[names(data)=='smooth'] <- 'smooth.COS'
+# smooth n2o
+gaussian <- gau.sm(data, 15, 'N2O.ac.ppb'); data <- cbind(data, smooth.N2O = gaussian[, 2], smooth.N2O.sd  = gaussian[,3])
+# smooth ch4
+gaussian <- gau.sm(data, 15, 'CH4.ac.ppb'); data <- cbind(data, smooth.CH4 = gaussian[, 2], smooth.CH4.sd  = gaussian[,3])
+
+# select vertical profiles'
+if (flight=='0905') {
+  sel.alt.as <- data[which(data$time>=(11*3600+26*60+40) &	data$time<=	(11*3600+44*60+55)), ] 
+  sel.alt.des <- data[which(data$time>=	(11*3600+44*60+55) &	data$time <= (11*3600+55*60)), ]
+  
+  data <- mutate(data, flag = case_when(
+    # flag the vertical profiles
+    # time>=(11*3600+26*60+40) &	time<=	(11*3600+44*60+55) ~ "ascending",
+    # time>=(11*3600+44*60+55) &	time <= (11*3600+55*60) ~ "descending",
+    
+    # following the wind direction, number the flight leg
+    time>(12*3600) & time<(12*3600+24*60+31) ~ "1st.transect",
+    time>(12*3600+26*60+28) & time<(12*3600+46*60+43) ~ "2nd.transect",
+    time>(12*3600+50*60+45) & time<(13*3600+10*60) ~ "3rd.transect",
+    time>(13*3600+12*60+44) & time<(13*3600+41*60) ~ "4th.transect",
+  ))
+  
+} 
+
+# calculate the average wd and ws without vertical profiles
+df <- data[which(!is.na(data$flag)),]
+```
+
+```{r use the package "plotly" to plot the 3D flight track with concentrations}
+#| eval = FALSE
+#| 
+col = c("#00007F", "#0000FF", "#007FFF", "#00FFFF", "#7FFF7F", "#FFFF00", "#FF7F00", "#FF0000", "#7F0000")
+
+# species.list <- list( plotly::TeX("CO_\\text{2}[ppm]"), bquote(''*CH[4]*' [ppb]'), bquote(''*CO*' [ppb]'), # bquote(''*N[2]*O*' [ppb]'), bquote(''*COS*' [ppt]'))
+# cannot show the subscript. Not solved yet!
+
+for (i in 1:5) {
+  p.3D <- plot_ly(data,
+                  x = ~lon,
+                  y = ~lat,
+                  z = ~alt,
+                  mode = "markers",
+                  type = "scatter3d",
+                  color = ~data[, i + 24],
+                  colors = colorRampPalette(col)(length(data)),
+                  marker = list(size = 4, opacity = 0),
+                  text = paste("<br>Longitude:", round(data$lon, 5), '[&deg;]',
+                               "<br>Latitude:", round(data$lat, 5), '[&deg;]',
+                               "<br>Altitude:", round(data$alt, 5), '[m]',
+                               "<br>", names(data)[i+24], ": ", round(data[, i + 24], 2),
+                               "<br>UTC_Time:", as.character(data$date))) %>%
+    colorbar(title = names(data)[i+24], len = 1) %>%
+    layout(
+      title = names(data)[i+24],
+      scene = list(
+        xaxis = list(title = 'Longitude [deg]', range = c(min(data$lon) - 0.001, max(data$lon) + 0.001)),
+        yaxis = list(title = 'Latitude [deg]', range = c(min(data$lat) - 0.001, max(data$lat) + 0.001)),
+        zaxis = list(title = 'Altitude [m]')
+      )
+    )
+
+htmlwidgets::saveWidget(p.3D, file = paste0(wdir, flight, "/plots/", flight,  "_3D_", names(data)[i+24], ".html"))
+
+}
+
+```
+
+
+
+\newpage
+# **Check if the conditions are suitable to apply the mass balance approach**
+
+## **if trace gas within PBL is mixed well**
+
+### **vertical profiles of potential temperature and trace gases**
+```{r vertical profile}
+  p.pot <- ggplot2::ggplot()+
+    geom_point(sel.alt.as, mapping = aes(x = pot, y = alt, colour = 'as'), size=0.3)+
+    geom_point(sel.alt.des, mapping = aes(x = pot, y = alt, colour = 'des'), size=0.3)+
+    geom_hline(yintercept= c(1250, 1350), linetype="dashed", color = "black")+
+    #annotate('text',x =300, y = 1200, label = 'PBL=1250 m')+
+    theme(axis.title.y = element_blank(),
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    scale_color_manual(labels = c("as", "des"), values = c("blue", "red"))+
+    xlab('Potential Temperature [K]')
+  
+  p.Tair <- ggplot()+
+    geom_point(sel.alt.as, mapping = aes(x = Tair, y = alt, colour = 'as'), size=0.3)+
+    geom_point(sel.alt.des, mapping = aes(x = Tair, y = alt, colour = 'des'), size=0.3)+
+    geom_hline(yintercept= 1250, linetype="dashed", color = "black")+
+    theme(axis.title.y = element_blank(),
+          legend.position = 'right', legend.title=element_blank(),
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    scale_color_manual(labels = c("as", "des"), values = c("blue", "red"))+
+    xlab('Tair [K]')
+  
+  p.N2O <- ggplot()+
+    geom_point(sel.alt.as, mapping = aes(x = N2O.ac.ppb, y = alt, colour = 'as'), size=0.3)+
+    geom_point(sel.alt.des, mapping = aes(x = N2O.ac.ppb, y = alt, colour = 'des'), size=0.3)+
+    geom_path(sel.alt.as, mapping = aes(x = smooth.N2O, y = alt, colour = 'as'), linewidth=0.6)+
+    geom_path(sel.alt.des, mapping = aes(x = smooth.N2O, y = alt, colour = 'des'), linewidth=0.6)+
+
+    geom_hline(yintercept= 1250,  linetype="dashed", color = "black")+
+    theme(axis.title.y = element_blank(),
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    scale_color_manual(labels = c("as", "des"), values = c("blue", "red"))+
+    xlab( bquote(''*N[2]*O*' [ppb]'))
+  
+  p.CO <- ggplot()+
+    geom_point(sel.alt.as, mapping = aes(x = CO.ac.ppb, y = alt, colour = 'as'), size=0.3)+
+    geom_point(sel.alt.des, mapping = aes(x = CO.ac.ppb, y = alt, colour = 'des'), size=0.3)+
+    geom_hline(yintercept= 1250,  linetype="dashed", color = "black")+
+    theme(axis.title.y = element_blank(),
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    scale_color_manual(labels = c("as", "des"), values = c("blue", "red"))+
+    xlab( bquote(''*CO*' [ppb]'))
+  
+  p.CH4 <- ggplot()+
+    geom_point(sel.alt.as, mapping = aes(x = CH4.ac.ppb, y = alt, colour = 'as'), size=0.3)+
+    geom_point(sel.alt.des, mapping = aes(x = CH4.ac.ppb, y = alt, colour = 'des'), size=0.3)+
+    geom_hline(yintercept= 1000, linetype="dashed", color = "black")+
+    theme(axis.title.y = element_blank(),
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    scale_color_manual(labels = c("as", "des"), values = c("blue", "red"))+
+    xlab( bquote(''*CH[4]*' [ppb]'))
+  
+  p.CO2 <- ggplot()+
+    geom_point(sel.alt.as, mapping = aes(x = CO2.ac.ppm, y = alt, colour = 'as'), size=0.3)+
+    geom_point(sel.alt.des, mapping = aes(x = CO2.ac.ppm, y = alt, colour = 'des'), size=0.3)+
+    geom_hline(yintercept= 1000, linetype="dashed", color = "black")+
+    theme(axis.title.y = element_blank(),
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    scale_color_manual(labels = c("as", "des"), values = c("blue", "red"))+
+    xlab( bquote(''*CO[2]*' [ppm]'))
+  
+  p.COS <- ggplot()+
+    geom_point(sel.alt.as, mapping = aes(x = COS.ac.ppt, y = alt, colour = 'as'), size=0.3)+
+    geom_point(sel.alt.des, mapping = aes(x = COS.ac.ppt, y = alt, colour = 'des'), size=0.3)+
+    geom_path(sel.alt.as, mapping = aes(x = smooth.COS, y = alt, colour = 'as'), linewidth=0.6)+
+    geom_path(sel.alt.des, mapping = aes(x = smooth.COS, y = alt, colour = 'des'), linewidth=0.6)+
+    
+    geom_hline(yintercept= 1250, linetype="dashed", color = "black")+
+    theme(axis.title.y = element_blank(),
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    scale_color_manual(labels = c("as", "des"), values = c("blue", "red"))+
+    xlab( bquote(''*COS*' [ppt]'))
+  
+#tiff(paste0(wdir, flight, '/plots/', flight, '_vertical_profiles.tiff'),  units="mm", width=300, height=200, res=300)
+grid.arrange(arrangeGrob(p.pot, p.Tair, nrow = 1,
+                           top = textGrob("vertical profiles", vjust = 1, gp = gpar(fontface = "bold", cex = 1.5)),
+                           left = textGrob("alt [m]", rot = 90, vjust = 1)), 
+               arrangeGrob(p.N2O, p.CO, p.CH4, p.CO2, p.COS, nrow = 1,
+                           left = textGrob("alt [m]", rot = 90, vjust = 1)), 
+               #widths=unit.c(unit(1, "npc")-legend$width, legend$width), 
+               nrow=2)
+# print(p)
+# while (!is.null(dev.list()))  dev.off()
+```
+### **correlation of trace gases and altitude within CBL**
+
+```{r correlation with altitude}
+ 
+data.n2o <- average.by.alt(df.as,  'N2O.ac.ppb', 50)#; nrow(data.n2o); names(data.n2o)
+data.ch4 <- average.by.alt(df.as,  'CH4.ac.ppb', 50)#; nrow(data.ch4); names(data.ch4)
+
+  p.n2o <- ggplot(data.n2o, mapping = aes(x = alt.average, y = mean))+geom_point()+
+    stat_smooth(method = 'lm', formula = y~x)+
+    
+    stat_regline_equation(aes(label =  paste(after_stat(eq.label), after_stat(rr.label), sep = "~~~~")),
+                          formula = y ~ x,
+                          show.legend = FALSE)+
+    ylab( bquote(''*N[2]*O*' [ppb]'))+xlab('altitude [m]')
+    
+  
+  p.ch4 <- ggplot(data.ch4, mapping = aes(x = alt.average, y = mean))+geom_point()+
+    stat_smooth(method = 'lm', formula = y~x)+
+    
+    stat_regline_equation(aes(label =  paste(after_stat(eq.label), after_stat(rr.label), sep = "~~~~")),
+                          formula = y ~ x,
+                          show.legend = FALSE)+
+    ylab( bquote(''*CH[4]*' [ppb]'))+xlab('altitude [m]')
+    
+
+grid.arrange(p.n2o, p.ch4, ncol=2)
+
+```
+
+
+## **wind direction and speed**
+### **time series of wind direction and speed**
+```{r plot wd and ws}
+p.wd <- ggplot()+
+    geom_point(data, mapping = aes(y = wd, x = date, colour = flag), size=0.3)+
+    scale_x_datetime(breaks='20 min', labels = scales::date_format("%H:%M"))+  
+    theme(
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    ylab( 'wind direction [deg]')
+
+p.ws <- ggplot()+
+    geom_point(data, mapping = aes(y = ws, x = date, colour = flag), size=0.3)+
+    scale_x_datetime(breaks='20 min', labels = scales::date_format("%H:%M"))+  
+    theme(
+          legend.title=element_blank(), legend.position = 'bottom',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(2,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    ylab( 'wind speed [m/s]')
+grid.arrange(p.wd, p.ws, nrow=2)
+```
+
+### **altitude VS wind direction and speed**
+```{r altitude VS wind direction and speed}
+  p.ws <- ggplot()+
+    geom_point(sel.alt.as, mapping = aes(x = ws, y = alt, colour = 'as'), size=0.3)+
+    geom_point(sel.alt.des, mapping = aes(x = ws, y = alt, colour = 'des'), size=0.3)+
+    #geom_hline(yintercept= 1250, linetype="dashed", color = "black")+
+    #annotate('text',x =300, y = 1200, label = 'PBL=1250 m')+
+    theme(axis.title.y = element_blank(),
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    scale_color_manual(labels = c("as", "des"), values = c("blue", "red"))+
+    xlab('Wind speed [m/s]')
+
+  p.wd <- ggplot()+
+    geom_point(sel.alt.as, mapping = aes(x = wd, y = alt, colour = 'as'), size=0.3)+
+    geom_point(sel.alt.des, mapping = aes(x = wd, y = alt, colour = 'des'), size=0.3)+
+    #geom_hline(yintercept= 1250, linetype="dashed", color = "black")+
+    theme(axis.title.y = element_blank(),
+          legend.position = c(0.75, 0.75), legend.title=element_blank(),
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    scale_color_manual(labels = c("as", "des"), values = c("blue", "red"))+
+    xlab('Wind direction [deg]')
+  
+  df <- rbind(sel.alt.as, sel.alt.des)
+  df <- df[which(df$alt<1000),]
+  p.ws.fit <- ggplot(df, mapping=aes(x = alt, y = ws))+
+    geom_point(size=0.3)+
+    stat_smooth( method = 'lm', formula = y~x)+
+    stat_regline_equation(mapping = aes( label =  paste(after_stat(eq.label), after_stat(rr.label), sep = "~~~~")),
+                          formula = y ~ x, show.legend = FALSE)+
+    theme(
+      legend.title=element_blank(), legend.position = 'none',
+      legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+      legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+      legend.background = element_rect(fill = "transparent", colour = NA),
+      legend.key = element_rect(fill = NA, colour = NA))+
+    ylab('Wind speed [m/s]')
+
+      p.wd.fit <- ggplot(df, mapping=aes(x = alt, y = wd))+
+      geom_point(size=0.3)+
+      stat_smooth( method = 'lm', formula = y~x)+
+      stat_regline_equation(mapping = aes( label =  paste(after_stat(eq.label), after_stat(rr.label), sep = "~~~~")),
+                            formula = y ~ x, show.legend = FALSE)+
+      theme(
+        legend.title=element_blank(), legend.position = 'none',
+        legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+        legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+        legend.background = element_rect(fill = "transparent", colour = NA),
+        legend.key = element_rect(fill = NA, colour = NA))+
+      ylab('Wind direction [deg]')
+
+      grid.arrange(arrangeGrob(p.ws, p.wd, nrow = 1,
+                         top = textGrob("vertical profile", vjust = 1, gp = gpar(fontface = "bold", cex = 1.5)),
+                         left = textGrob("alt [m]", rot = 90, vjust = 1)),
+             arrangeGrob(p.ws.fit, p.wd.fit, nrow = 1),
+             #widths=unit.c(unit(1, "npc")-legend$width, legend$width),
+             nrow=2)
+
+```
+
+
+## **overview of concentration along flight transect, 2D concentration map and time series** 
+```{r plot 2D concetration map}
+#| eval=FALSE
+
+col = c("#00007F", "#0000FF", "#007FFF", "#00FFFF", "#7FFF7F", "#FFFF00", "#FF7F00", "#FF0000", "#7F0000");
+
+range.lat<-c(max(data$lat)+0.05, min(data$lat))
+range.lon<-c(min(data$lon), max(data$lon))
+sbbox <- make_bbox(lon = range.lon, lat = range.lat, f = .2)
+
+# get map, not a google map since it has been asked to pay for it
+map.flight = get_map(location=sbbox, zoom=10, maptype = c("terrain"), source = "stamen", scale = "auto") # use ggmap(map) in ggplot environment to plot
+
+# convert a wind dataframe during the course of the flight
+wind <- data.frame(lon = mean(data$lon), lat = mean(data$lat), wd = mean.cir(data$wd), ws = mean(data$ws),
+                   U = mean(data$U), V = mean(data$V))
+beta <- wind$wd
+
+# LOAD the locations of WWTP
+WWTP <- readxl::read_xlsx("D:/1 PhD Studies/1 Data/Rotterdam_campaign_2022/WWTP.xlsx")
+
+# load the city boundary of Rotterdam
+library(geodata) # gadm
+d <- gadm("Netherlands", level=2, path="c:/users/xin09/", version="latest", resolution=1)
+rotterdam <- geom(d[341,], df = TRUE) 
+
+species.list <- list( bquote(''*CO[2]*' [ppm]'), bquote(''*CH[4]*' [ppb]'), bquote(''*CO*' [ppb]'), bquote(''*N[2]*O*' [ppb]'), bquote(''*COS*' [ppt]'))
+names <- c('CO2', 'CH4', 'CO', 'N2O', 'COS')
+  
+if(flight=="0905"){ x0 = 4.25; y0 = 51.8}
+for(i in 1:5){
+  
+  p <- ggmap(map.flight)+
+  geom_point(data = data, mapping = aes(x = lon, y = lat, colour = data[, i+23]), size=0.7)+
+  geom_point(data = WWTP, mapping = aes(x = lon, y = lat), colour = 'pink', shape = 'diamond', size=2)+
+
+  geom_segment(
+    wind, 
+    mapping = aes(
+      x = x0, y = y0, 
+      xend = x0 + 10000*sin(beta*pi/180)/per.lon, 
+      yend = y0 + 10000*cos(beta*pi/180)/per.lat
+    ), 
+    arrow = arrow(length = unit(0.1, "npc")), linewidth = 2
+  )+
+  annotate('text', x = x0+0.05, y = y0+0.05, label = 'wind', size = 10)+
+  scale_colour_gradientn( colors = colorRampPalette(col)(length(data)))+ 
+  labs(colour =  do.call("expression", species.list[i]), x = 'Longitude [deg]', y = 'Latitude [deg]')+
+  
+  theme_classic()+
+  theme_bw(base_size = 16)+
+  theme( plot.title=element_text(size=12, hjust=0.5, vjust=0.5, face='bold'), plot.margin = rep(unit(0,"null"),4),
+         axis.title.x = element_text(size=12), axis.text.x = element_text(size=12),
+         axis.title.y = element_text(size=12), axis.text.y = element_text(size=12)
+  )
+
+tiff(paste0(wdir, flight, '/plots/', flight, '_2D_',  names[i], '_map.tiff'),  units="mm", width=150, height=150, res=300)
+print(p)
+while (!is.null(dev.list()))  dev.off()
+
+}
+
+
+```
+
+```{r interactive 2D map with an arrow indicating wd}
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# determine the zero point on each transect following wind direction
+# plot the wind direction on the 2D flight track map using plotly to determine easily the zero point
+wind <- data.frame(lon = mean(df$lon), lat = mean(df$lat), wd = mean.cir(df$wd), ws = mean(df$ws), U = mean(df$U), V = mean(df$V))
+if(flight=="0905"){ x0 = 4.25; y0 = 51.8}
+col = c("#00007F", "#0000FF", "#007FFF", "#00FFFF", "#7FFF7F", "#FFFF00", "#FF7F00", "#FF0000", "#7F0000")
+
+p.2D <- plot_ly(data,
+                x = ~lon,
+                y = ~lat,
+                mode = "markers",
+                type = "scatter",
+                color = ~N2O.ac.ppb,
+                colors = colorRampPalette(col)(length(data$N2O.ac.ppb)),
+                marker = list(size = 4),
+                text = paste("<br>Longitude:",round(data$lon, 5), '[&deg;]',
+                             "<br>Latitude:",round(data$lat,5), '[&deg;]',
+                             "<br>Altitude:",round(data$alt,5), '[m]',
+                             "<br>N2O:", as.character(round(data$N2O.ac.ppb, 2)), '[ppb]',
+                             '<br>UTC_Time:', as.character(data$date))
+) %>%
+  colorbar(title = 'N2O [ppb]', len=1) %>%
+  add_annotations( x = ~x0 + 50000*sin(wind$wd*pi/180)/per.lon,
+                   y = ~y0 + 50000*cos(wind$wd*pi/180)/per.lat,
+                   xref = "x", yref = "y",
+                   axref = "x", ayref = "y",
+                   text = "",
+                   showarrow = T,
+                   ax = ~x0,
+                   ay = ~y0,
+                   data = wind) %>%
+  layout(scene = list(xaxis = list(title = 'Longitude [deg]', range = c(min(data$lon) - 0.001, max(data$lon) + 0.001)),
+                      yaxis = list(title = 'Latitude [deg]', range = c(min(data$lat) - 0.001, max(data$lat) + 0.001)))
+)
+htmlwidgets::saveWidget(p.2D, file = paste0(wdir, flight, '/plots/', flight,  '_2D_N2O.html'))
+```
+
+```{r convert the cooordinates into distance in meters on the perpendicular plane to wd}
+
+# the wd is almost perpendicular to transects, within 2 degrees
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  transect1 <- data[which(data$flag=='1st.transect'),]
+  lon.zero <- 4.2483
+  lat.zero <- 51.8348
+  
+  distance <- NULL
+  for(i in 1:nrow(transect1)){
+    if(is.na(transect1$lat[i])){
+            d <- NA
+    } else {
+            d <- sqrt((lon.zero-transect1$lon[i])^2*per.lon^2+(lat.zero-transect1$lat[i])^2*per.lat^2)
+
+      if(transect1$lon[i]> lon.zero){
+        d <- d
+      } else {
+              d <- d*(-1)
+      }
+    }
+    distance <- c(distance, d)
+  }
+  transect1 <- cbind(transect1, distance)
+
+  
+  transect2 <- data[which(data$flag=='2nd.transect'),]
+  lon.zero <- 4.2501
+  lat.zero <- 51.8719
+  
+  distance <- NULL
+  for(i in 1:nrow(transect2)){
+    if(is.na(transect2$lat[i])){
+            d <- NA
+    } else {
+    d <- sqrt((lon.zero-transect2$lon[i])^2*per.lon^2+(lat.zero-transect2$lat[i])^2*per.lat^2)
+    #d <- distHaversine( c(lon.zero, lat.zero), c(transect2$lon[i], transect2$lat[i]))
+    if(transect2$lon[i]> lon.zero){
+      d <- d
+    } else {
+      d <- d*(-1)
+    }
+    }
+    distance <- c(distance, d)
+  }
+  transect2 <- cbind(transect2, distance)
+
+  
+  transect3 <- data[which(data$flag=='3rd.transect'),]
+  lon.zero <- 4.2478
+  lat.zero <- 51.9276
+  
+  distance <- NULL
+  for(i in 1:nrow(transect3)){
+    if(is.na(transect3$lat[i])){
+            d <- NA
+    } else {
+    d <- sqrt((lon.zero-transect3$lon[i])^2*per.lon^2+(lat.zero-transect3$lat[i])^2*per.lat^2)
+    if(transect3$lon[i]> lon.zero){
+      d <- d
+    } else {
+      d <- d*(-1)
+    }
+    }
+    distance <- c(distance, d)
+  }
+  transect3 <- cbind(transect3, distance)
+
+  
+  transect4 <- data[which(data$flag=='4th.transect'),]
+  lon.zero <- 4.2497
+  lat.zero <- 51.977
+  
+  distance <- NULL
+  for(i in 1:nrow(transect4)){
+    if(is.na(transect4$lat[i])){
+            d <- NA
+    } else {
+    d <- sqrt((lon.zero-transect4$lon[i])^2*per.lon^2+(lat.zero-transect4$lat[i])^2*per.lat^2)
+    if(transect4$lon[i]> lon.zero){
+      d <- d
+    } else {
+      d <- d*(-1)
+    }
+    }
+    distance <- c(distance, d)
+  }
+  transect4 <- cbind(transect4, distance)
+
+  
+  transect <- rbind(transect1, transect2, transect3, transect4)
+```
+
+```{r plot the concentration along the horizontal distance}
+  #~~~~~~~~~~~~~~~~~~~~~~~ plot ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    p.n2o <- ggplot(transect)+
+    geom_point(mapping = aes(x = distance, y = N2O.ac.ppb, group = flag, colour = flag), size = 0.1)+
+    geom_path(mapping = aes(x = distance, y = smooth.N2O, group = flag, colour = flag), linewidth = 0.8)+
+    geom_ribbon( show.legend = FALSE,
+                 mapping = aes(x = distance, ymin= smooth.N2O-smooth.N2O.sd, ymax= smooth.N2O+smooth.N2O.sd, fill= flag, colour = flag),
+                 alpha=0.1,       #transparency
+                 linetype='dashed',      #solid, dashed or other line types
+                 #border line color
+                 linewidth=0.2)+
+    geom_vline(xintercept = c(left, right))+
+    geom_vline(xintercept = c(9000, 17000))+
+
+    # geom_hline(yintercept = 338.2)+
+      theme_bw()+
+      theme( plot.title=element_text(size=12, hjust=0.5, vjust=0.5, face='bold'), plot.margin = rep(unit(0,"null"),4),
+             #axis.title.x = element_blank(),axis.text.x = element_blank(),
+             axis.title.x = element_text(size=12),axis.text.x = element_text(size=12),
+             axis.title.y = element_text(size=12),axis.text.y = element_text(size=12),
+            # axis.title.y.right = element_text(colour = 'lightgreen'), 
+             #axis.text.y.right = element_text(colour = 'lightgreen'),
+             legend.title=element_blank(), legend.position = c(0.3, 0.2),
+             legend.text = element_text(size =12),legend.margin = margin(0,0,0,0),
+             legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+             legend.background = element_rect(fill = "transparent", colour = NA),
+             legend.key = element_rect(fill = NA, colour = NA),
+            strip.background = element_rect(fill = NA, colour = NA),strip.text.x  = element_blank() )+
+ylab( bquote(''*N[2]*O*' [ppb]'))
+
+    p.n2o.sd <- ggplot(transect)+
+    geom_line(mapping = aes(x = distance, y = smooth.N2O.sd, group = flag, colour = flag), linewidth = 0.1)+
+      theme_bw()+
+      theme( plot.title=element_text(size=12, hjust=0.5, vjust=0.5, face='bold'), plot.margin = rep(unit(0,"null"),4),
+             #axis.title.x = element_blank(),axis.text.x = element_blank(),
+             axis.title.x = element_text(size=12),axis.text.x = element_text(size=12),
+             axis.title.y = element_text(size=12),axis.text.y = element_text(size=12),
+            # axis.title.y.right = element_text(colour = 'lightgreen'), 
+             #axis.text.y.right = element_text(colour = 'lightgreen'),
+             legend.title=element_blank(), legend.position = c(0.3, 0.2),
+             legend.text = element_text(size =12),legend.margin = margin(0,0,0,0),
+             legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+             legend.background = element_rect(fill = "transparent", colour = NA),
+             legend.key = element_rect(fill = NA, colour = NA),
+            strip.background = element_rect(fill = NA, colour = NA),strip.text.x  = element_blank() )+
+ylab( bquote(''*N[2]*O*'sd [ppb]'))
+
+    p.ch4 <- ggplot(transect)+
+    geom_point(mapping = aes(x = distance, y = CH4.ac.ppb, group = flag, colour = flag), size = 0.1)+
+    geom_path(mapping = aes(x = distance, y = smooth.CH4, group = flag, colour = flag), linewidth = 0.8)+
+    geom_ribbon( show.legend = FALSE,
+                 mapping = aes(x = distance, ymin= smooth.CH4-smooth.CH4.sd, ymax= smooth.CH4+smooth.CH4.sd, fill= flag, colour = flag),
+                 alpha=0.1,       #transparency
+                 linetype='dashed',      #solid, dashed or other line types
+                 #border line color
+                 linewidth=0.2)+
+    #geom_vline(xintercept = c(-8000, 12000))+
+      theme_bw()+
+      theme( plot.title=element_text(size=12, hjust=0.5, vjust=0.5, face='bold'), plot.margin = rep(unit(0,"null"),4),
+             #axis.title.x = element_blank(),axis.text.x = element_blank(),
+             axis.title.x = element_text(size=12),axis.text.x = element_text(size=12),
+             axis.title.y = element_text(size=12),axis.text.y = element_text(size=12),
+            # axis.title.y.right = element_text(colour = 'lightgreen'), 
+             #axis.text.y.right = element_text(colour = 'lightgreen'),
+             legend.title=element_blank(), legend.position = c(0.7, 0.2),
+             legend.text = element_text(size =12),legend.margin = margin(0,0,0,0),
+             legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+             legend.background = element_rect(fill = "transparent", colour = NA),
+             legend.key = element_rect(fill = NA, colour = NA),
+            strip.background = element_rect(fill = NA, colour = NA),strip.text.x  = element_blank() )+
+    ylab( bquote(''*CH[4]*' [ppb]'))
+    
+    p.ch4.sd <- ggplot(transect)+
+    geom_line(mapping = aes(x = distance, y = smooth.CH4.sd, group = flag, colour = flag), linewidth = 0.1)+
+      theme_bw()+
+      theme( plot.title=element_text(size=12, hjust=0.5, vjust=0.5, face='bold'), plot.margin = rep(unit(0,"null"),4),
+             #axis.title.x = element_blank(),axis.text.x = element_blank(),
+             axis.title.x = element_text(size=12),axis.text.x = element_text(size=12),
+             axis.title.y = element_text(size=12),axis.text.y = element_text(size=12),
+            # axis.title.y.right = element_text(colour = 'lightgreen'), 
+             #axis.text.y.right = element_text(colour = 'lightgreen'),
+             legend.title=element_blank(), legend.position = c(0.3, 0.2),
+             legend.text = element_text(size =12),legend.margin = margin(0,0,0,0),
+             legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+             legend.background = element_rect(fill = "transparent", colour = NA),
+             legend.key = element_rect(fill = NA, colour = NA),
+            strip.background = element_rect(fill = NA, colour = NA),strip.text.x  = element_blank() )+
+    ylab( bquote(''*CH[4]*'sd [ppb]'))
+
+  #grid.arrange(p.n2o, p.ch4, p.n2o.sd, p.ch4.sd, nrow =2, ncol=2)  
+
+  # tiff(paste0("D:/1 PhD Studies/1 Data/Rotterdam_campaign_2022/", flight, "/plots/", flight, "concentration along transect_map.tiff"),  units="mm", width=200, height=150, res=300)
+  #   grid.arrange(p.n2o, p.ch4, p.n2o.sd, p.ch4.sd, nrow =2, ncol=2)  
+  #   while (!is.null(dev.list()))  dev.off()
+
+```
+
+```{r define plume width}
+  #~~~~~~~~~~~~~~~~~~~~~~~ the horizontal distance for which the plume is defined ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  # based on N2O concentration
+  left <- max(transect4$distance[which(transect4$distance<(-10000) & transect4$smooth.N2O.sd<0.25)]); left
+  right<- min(transect4$distance[which(transect4$distance>(-10000) & transect4$smooth.N2O.sd<0.125)]); right
+  mean(c(right-left, 7600))
+  # based on CH4 concentration
+  left <- max(transect2$distance[which(transect2$distance<(-10000) & transect2$smooth.CH4.sd<6.25)]); left
+  right<- min(transect2$distance[which(transect2$distance>(-5000) & transect2$smooth.CH4.sd<2.5)]); right
+  mean(c(right-left, 5000))
+
+```
+
+
+```{r time series}
+labels <- group_by(data, flag) %>% summarise_all(.funs = list(~mean(., na.rm=TRUE)))
+labels <- as.data.frame(labels)
+
+  p.N2O <- ggplot()+
+    geom_point(data, mapping = aes(y = N2O.ac.ppb, x = date, colour = flag), size=0.3)+
+    geom_text(labels[which(!is.na(labels$flag)),], mapping = aes(x = date, y = 339, label = round(N2O.ac.ppb,1), colour = flag))+
+    scale_x_datetime(breaks='20 min', labels = scales::date_format("%H:%M"))+  
+    theme(
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    ylab( bquote(''*N[2]*O*' [ppb]'))
+  
+  p.CO <- ggplot()+
+    geom_point(data, mapping = aes(y = CO.ac.ppb, x = date, colour = flag), size=0.3)+
+    scale_x_datetime(breaks='20 min', labels = scales::date_format("%H:%M"))+  
+    theme(
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    ylab( bquote(''*CO*' [ppb]'))
+  
+  p.CH4 <- ggplot()+
+    geom_point(data, mapping = aes(y = CH4.ac.ppb, x = date, colour = flag), size=0.3)+
+    geom_hline(yintercept = c(2020,2030), colour = 'black')+
+    geom_text(labels[which(!is.na(labels$flag)),], mapping = aes(x = date, y = 2010, label = round(CH4.ac.ppb,1), colour = flag))+
+    scale_x_datetime(breaks='20 min', labels = scales::date_format("%H:%M"))+  
+    theme(legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    ylab( bquote(''*CH[4]*' [ppb]'))
+  
+  p.CO2 <- ggplot()+
+    geom_point(data, mapping = aes(y = CO2.ac.ppm, x = date, colour = flag), size=0.3)+
+    scale_x_datetime(breaks='20 min', labels = scales::date_format("%H:%M"))+  
+    theme(
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    ylab( bquote(''*CO[2]*' [ppm]'))
+  
+  p.COS <- ggplot()+
+    geom_point(data, mapping = aes(y = COS.ac.ppt, x = date, colour = flag), size=0.3)+
+    geom_line(data, mapping = aes(y = smooth.COS, x = date), linewidth=0.8, colour = 'blue')+
+    scale_x_datetime(breaks='20 min', labels = scales::date_format("%H:%M"))+  
+    theme(
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    ylab( bquote(''*COS*' [ppt]'))
+  
+ # tiff(paste0(wdir, flight, '/plots/', flight, '_smooth_concentration_time_series.tiff'),  units="mm", width=300, height=250, res=300)
+  grid.arrange(p.N2O, p.CO, p.CH4, p.CO2, p.COS, ncol = 1 )  
+  #while (!is.null(dev.list()))  dev.off()
+```
+
+
+
+\newpage
+# **Calculate fluxes**
+## **Harbor emission estimates**
+The first question is that if the harbour should be treated as a point source or a diffuse source? The 4th transect (downwind transect) shows that the plume width is around 7 km, and the 4th transect is about around 9 km downwind the emitters located on the Europoort or Maasvlakte area. The east to the harbour plume on the downwind transect, there is another smaller peak of N2O, coming from other sources. Because of the relatively small distance between the two plumes, they are overlapped, and the N2O concentrations between two plumes did not decrease to the background level, resulting in a valley of N2O concentrations. The downwind bg should use the low and stable concentrations outside the two plumes. Besides, the upwind transect (3rd transect) also shows a plume, perhaps having an impact on the observed plume on the downwind transect. However, the concentrations at the upwind location exactly corresponding to the downwind plume are missed due to QCL calibration!
+
+Based on the spatial scale of the plume width and downwind distance, the harbour emissions are regarded to be from point sources, although in real situations, there could be several emitters. Lavoie et al., estimated emissions from point sources (Gas Processing Plant, Compressor Station, and Landfill) using aircraft-based mass balance method; the downwind distance ranges from 2 km to 4.4 km, and the horizontal distance for which the plume is defined range from 3 km to 7 km. Yu et al., estimated CH4 emission from point sources (animal feeding operations in the region and two sugar processing plants) using aircraft-based mass balance method, and the flight track is a vertically stacked set of circuits (~1 km radius) around each facility extending from as close to the ground as possible through the extent of the plume.
+
+### **assume mixed well PBL**
+```{r emission estimates for N2O}
+#| eval = FALSE
+
+# set the parameters
+wd <- mean.cir(df$wd)
+ws <- mean(df$ws, na.rm = TRUE) #unit: m/s
+angle <- wd
+
+width <- 7600 #unit: m
+z <- 1600 #unit: m
+p.dry <- mean(df$Ps*100-df$p.H2O*100) #unit:Pa
+Tair <- mean(df$Tair) #kelvin
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~ mean concentration of the two sides as downwind bg FOR N2O ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# transect4
+bg <- mean(transect4[which(transect4$distance<(-13000) | (transect4$distance>9000 & transect4$distance<17000)), 'N2O.ac.ppb'], na.rm = TRUE); bg
+bg.frame <- mutate(transect4, enhancement.transect4 = smooth.N2O-bg)
+N2O.enhancement <- mean(bg.frame$enhancement.transect4[which(bg.frame$distance>(-13000) & bg.frame$distance<(-5000) )], na.rm = TRUE)
+
+flux <- print(10^(-9)*N2O.enhancement*p.dry/8.314/Tair*ws*cos(angle*pi/180)*z*width)  #unit: mol/s
+
+# the uncertainty of parameters
+u.atmospheric.variability <- sd(transect4[which(transect4$distance>9000 & transect4$distance<17000), 'N2O.ac.ppb'], na.rm = TRUE)
+u.bg <- sqrt(u.atmospheric.variability^2+0.1^2)
+u.plume <- 0.1 # the N2O measurement precision: 0.1 ppb
+u.enhancement <- sqrt(u.bg^2+u.plume^2)
+angle.select <- df$wd;
+u.wd <- sd(cos(angle.select*pi/180))/mean(cos(angle.select*pi/180)) # relative uncertainty of wd
+u.width <- 1600
+u.pbl <- 100
+
+sqrt(
+  (u.enhancement/N2O.enhancement)^2+(sd(df$ws)/mean(df$ws))^2+(u.wd)^2+(u.pbl/z)^2+(u.width/width)^2
+)
+
+
+```
+
+### **NOT mixed well PBL**
+
+
+\NEWPAGE
+
+\newpage
+
+#**Harbour emissions using LES model**
+```{r calculate harbour emissions}
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~1. roughly pick up the LES model data corresponding to airborne measurements ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# load airborne measurements
+flight <- '0905'
+wdir <- "D:/1 phd studies/1 data/Rotterdam_campaign_2022/"
+
+data <- read.csv(paste0(wdir, flight, "/AirCore/AirCore_retrieval/AirCore_N2O_CO_CO2_CH4_CO_2022", flight, ".csv"))
+# data <- mutate(data, p.H2O = H2O/18*8.3145*Tair/100,  #unit:hPa/mbar
+#                pot = Tair*(1000/Ps)^0.286, ws=rWind::uv2ds(U,V)[,2], wd=rWind::uv2ds(U,V)[,1])#;names(data)
+# data <- mutate(data, vir.pot = pot*(1+0.61*p.H2O/1000))
+data <- data.frame(date = ISOdate(data$yyyy, data$mm, data$dd, data$hh, data$min, data$sec, tz='UTC'), data)
+data$date <- round(data$date) # the second is not integer
+# pick up airborne measurements for harbour areas
+data <- data[
+  data$date>as.POSIXlt("2022-09-05 12:50:30", tz='UTC') & data$date<as.POSIXlt("2022-09-05 13:33:00", tz='UTC'),
+  c("date", "lat", "lon", "alt", "N2O.ac.ppb", "CH4.ac.ppb")
+  ]
+names(data)[names(data)=="lat"] <- "lat.ac";
+names(data)[names(data)=="lon"] <- "lon.ac";
+names(data)[names(data)=="alt"] <- "alt.ac"
+
+
+# open the wrfout .nc files
+library(ncdf4) # package for netcdf manipulation
+library(ncdf4.helpers) #nc.get.time.series
+
+filenames <- list.files(path = "F:/Harbour_les/les0905/", pattern = "")
+temp <- unlist(strsplit(filenames, "[_]"))
+
+hr <- temp[seq(4, length(filenames)*6, by = 6)];
+min <- temp[seq(5, length(filenames)*6, by = 6)];
+sec <- temp[seq(6, length(filenames)*6, by = 6)];
+time <- paste0(hr, "_", min, "_", sec)
+
+
+
+
+df <- NULL
+for(i in 1:length(time)) {
+  dat.nc <- nc_open(paste0("F:/Harbour_les/les0905/wrfout_d03_2022-09-05_", time[i]))
+
+# print(dat.nc, "D:/1 PhD Studies/1 Data/LES/wrfout_d03_2022-08-30_11_54_00.txt")
+# capture.output(print(dat.nc), file=paste0("F:/Harbour_les/les0830/wrfout_d03_2022-08-30_11_54_00.txt"), sep="\n", append=TRUE)
+
+  plume <- ncvar_get(dat.nc, "PLUME")  # the unit is kg N2O/kg Air
+  lat <- ncvar_get(dat.nc, "XLAT")
+  lon <- ncvar_get(dat.nc, "XLONG")
+  # znu <- ncvar_get(dat.nc, "ZNU")
+  # znw <- ncvar_get(dat.nc, "ZNW")
+  # water.vapour <- ncvar_get(dat.nc, "QVAPOR")
+  ph <- ncvar_get(dat.nc, "PH")
+  phb <- ncvar_get(dat.nc, "PHB")
+  hgt <- ncvar_get(dat.nc, "HGT")
+
+  nc_close(nc=dat.nc)
+  
+  # height (a.g.l) = geospatial height/9.81-terrain height
+  array1 <- (ph+phb)/9.81
+  array2 <- array(hgt, dim = c(ncol(hgt), nrow(hgt), dim(array1)[3]))
+  array3 <- array1-array2
+  
+  # the range of the altitude and latitude/longitude of each airborne flight
+  lower <- min(data$alt.ac, na.rm = TRUE);
+  upper <- max(data$alt.ac, na.rm = TRUE)
+  
+  # correspond to the airborne measurements height (above the ground level)
+  index <- which(array3>lower & array3<upper, arr.ind = TRUE)
+  #layers <- unique(index[,3])
+  layers <- 25:26
+  
+  # PICK UP THE layers of LES data and convert it into a dataframe
+  df <- rbind(
+    df,
+    data.frame(
+      date = as.POSIXct(paste0("2022-09-05 ", hr[i], ":", min[i], ":", sec[i]), tz = "UTC"),
+      lat = as.vector(lat),
+      lon = as.vector(lon),
+      alt = as.vector(array3[,,layers]),
+      N2O = as.vector(plume[,,layers])*28.96/44*10^9,  # convert the unit of kg N2O/ kg Air to the unit of ppb
+      CH4 = as.vector(plume[,,layers])*28.96/16*10^9  # convert the unit of kg CH4/ kg Air to the unit of ppb
+      )
+    )
+}
+
+# save data into a dataframe
+write.table(df, "D:/1 PhD Studies/1 Data/LES/2022_09_05_LES_corresponding_to_aircore_measurements.csv", sep = ",", row.names = FALSE, col.names=TRUE)
+
+
+
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~2.pick up the point from LES modelled data that is closest to airborne measurements~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+df <- read.csv("D:/1 PhD Studies/1 Data/LES/0905/2022_09_05_LES_layer_grid_cells_corresponding_to_aircore_measurements.csv")
+df$date <- as.POSIXct(df$date, tz = "UTC")
+
+date <- seq(
+  from = as.POSIXlt("2022-09-05 12:50:30", tz='UTC'),
+  to = as.POSIXlt("2022-09-05 13:33:00", tz='UTC'),
+  by = "30 sec"
+  )
+
+data.sel <- lapply(date, function(daytime){
+  subset(data, date==daytime)
+})
+data.sel <- as.data.frame(do.call(rbind, data.sel))
+
+
+df.sel <- lapply(date, function(daytime){
+  lat.ac <- data$lat.ac[data$date==daytime];
+  lon.ac <- data$lon.ac[data$date==daytime]
+  
+  df.sel.1 <- df[df$date==daytime,]
+  # ROUGHLY pick up the grid cells from LES that are corresponding to airborne measurements
+  condition <- df.sel.1$lat>(lat.ac-0.0005) & df.sel.1$lat<(lat.ac+0.0005) & df.sel.1$lon>(lon.ac-0.001) & df.sel.1$lon<(lon.ac+0.001) 
+  subset(df.sel.1, condition)
+})
+df.sel <- as.data.frame(do.call(rbind, df.sel))
+write.csv(df.sel, "D:/1 PhD Studies/1 Data/LES/0905/2022_09_05_LES_corresponding_to_aircore_measurements.csv")
+###################
+# plot to check !!!
+###################
+library(plot3D)
+P <- scatter3D(df$lat, df$lon, df$alt, colvar = df$CH4, pch=15, bty = "b2", clab = "CH4 enhancements [ppb]", main = "LES", xlab = "longitude", ylab = "latitude", zlab = "altitude [m a.g.l.]", ticktype = "detailed", add = FALSE)
+
+tiff(paste0("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/LES/", flight, "_LES_corre_aircore_CH4.tiff"), units="mm", width=250, height=250, res=300)
+scatter3D(df.sel$lat, df.sel$lon, df.sel$alt, colvar = df.sel$CH4, pch=15, bty = "b2", clab = "CH4 enhancements [ppb]", main = "LES", xlab = "longitude", ylab = "latitude", zlab = "altitude [m a.g.l.]", ticktype = "detailed", add = FALSE)
+while (!is.null(dev.list()))  dev.off()
+
+
+
+# pick up the grid cells close to airborne measurements
+df.merge <- merge(df.sel, data.sel, by = "date")
+df.merge <- mutate(
+  df.merge,
+  diff.lat = abs(lat.ac-lat),
+  diff.lon = abs(lon.ac-lon),
+  diff.alt = abs(alt.ac-alt)
+)
+df.merge <- mutate(df.merge, diff = sqrt(diff.lat^2+diff.lon^2+diff.alt^2))
+
+# pick up the LES modelled data based on min.diff for each timestamp
+df.sel <- lapply(date, function(daytime){
+  df.merge.1 <- subset(df.merge, date==daytime)
+  df.merge.1[which.min(df.merge.1$diff),]
+})
+df.sel <- as.data.frame(do.call(rbind, df.sel))
+write.csv(df.sel, "D:/1 PhD Studies/1 Data/LES/0905/2022_09_05_LES_closest_to_aircore_measurements.csv")
+###################
+# plot to check !!!
+###################
+library(plot3D)
+
+tiff(paste0("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/LES/", flight, "_LES_close_aircore_CH4.tiff"), units="mm", width=250, height=250, res=300)
+scatter3D(df.sel$lon, df.sel$lat, df.sel$alt, colvar = df.sel$CH4, pch=15, bty = "b2", clab = "CH4 enhancements [ppb]", theta = 10, phi = 40, main = "LES", xlab = "longitude", ylab = "latitude", zlab = "altitude [m a.g.l.]", ticktype = "detailed", add = FALSE)
+while (!is.null(dev.list()))  dev.off()
+
+
+
+############################################ interpolation ############################################
+###################################################################
+# fill in the same value assuming constant value within 30 seconds
+###################################################################
+library(tidyr)
+date <- seq(
+  from = as.POSIXlt("2022-09-05 12:50:30", tz='UTC'),
+  to = as.POSIXlt("2022-09-05 13:33:00", tz='UTC'),
+  by = "30 sec"
+  )
+
+les <- read.csv("D:/1 PhD Studies/1 Data/LES/0905/2022_09_05_LES_closest_to_aircore_measurements.csv");
+les$date <- as.POSIXct(les$date, tz = "UTC")
+df.merge <- merge(les[, c("date", "lat", "lon", "alt", "N2O", "CH4")], data, by = "date", all= TRUE)   # data indicate the aircore measurements
+
+# df.fill <- lapply(date, function(daytime){
+#   row <- (which(df.merge$date==daytime)-15):(which(df.merge$date==daytime)+14)
+#   df.merge.1 <- df.merge[row, ]
+#   alt <- mean(df.merge.1$alt, na.rm = TRUE)
+#   N2O <- mean(df.merge.1$N2O, na.rm = TRUE)
+#   CH4 <- mean(df.merge.1$CH4, na.rm = TRUE)
+#   replace_na(df.merge.1, list(alt = alt, N2O = N2O, CH4 = CH4))
+# })
+# df.fill <- as.data.frame(do.call(rbind, df.fill))
+
+df.fill <- NULL
+for(i in 1:length(date)) {
+  if(identical(which(df.merge$date==date[i]), integer(0))==TRUE) next
+  if(which(df.merge$date==date[i])-15 < 0) next
+  row <- (which(df.merge$date==date[i])-15):(which(df.merge$date==date[i])+14)
+  df.merge.1 <- df.merge[row, ]
+  alt <- mean(df.merge.1$alt, na.rm = TRUE)
+  N2O <- mean(df.merge.1$N2O, na.rm = TRUE)
+  CH4 <- mean(df.merge.1$CH4, na.rm = TRUE)
+  df.fill <- rbind(
+    df.fill, replace_na(df.merge.1, list(alt = alt, N2O = N2O, CH4 = CH4))
+  )
+}
+write.csv(df.fill, "D:/1 PhD Studies/1 Data/LES/0905/2022_09_05_same_value_fill_in_les.csv")
+
+
+#plot 
+df.fill <- read.csv("D:/1 PhD Studies/1 Data/LES/0905/2022_09_05_same_value_fill_in_les.csv");
+df.fill$date <- as.POSIXct(df.fill$date, tz = "UTC")
+
+df.fill <- mutate(
+  df.fill, 
+  N2O.ac.enhance = N2O.ac.ppb - quantile(df.fill$N2O.ac.ppb, probs = 0.05), 
+  CH4.ac.enhance = CH4.ac.ppb - quantile(df.fill$CH4.ac.ppb, probs = 0.05)
+  )
+df.fill <- df.fill[df.fill$date>as.POSIXlt("2022-08-30 12:10:00", tz='UTC') & df.fill$date<as.POSIXlt("2022-08-30 12:30:00", tz='UTC'), ]
+
+library(plot3D)
+library(viridis)
+tiff(paste0("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/LES/", flight, "_interpolated_27th_layer_LES_close_aircore_N2O.tiff"), units="mm", width=300, height=250, res=300)
+scatter3D(df.fill$lon.ac, df.fill$lat.ac, df.fill$alt, colvar = df.fill$N2O, pch=15, bty = "b2", clab = "les: N2O enhancements [ppb]", colkey = list(dist = -0.1), theta = 10, phi = 90, main = "LES vs measurements", xlab = "longitude", ylab = "latitude", zlab = "altitude [m a.g.l.]", ticktype = "detailed", add = FALSE, zlim = c(400, 500))
+lines3D(df.fill$lon.ac, df.fill$lat.ac, df.fill$alt.ac, colvar = df.fill$N2O.ac.enhance, col = viridis(10), colkey = list(side = 2, dist = -0.05), clab = "measurements: N2O enhancements [ppb]", pch=15, theta = 10, phi = 90, add = TRUE)
+while (!is.null(dev.list()))  dev.off()
+
+
+
+
+####################################################
+# interpolation by latitude using approx() in base r
+####################################################
+les <- read.csv("D:/1 PhD Studies/1 Data/LES/0905/2022_09_05_LES_closest_to_aircore_measurements.csv");
+les$date <- as.POSIXct(les$date, tz = "UTC")
+df.merge <- merge(les[, c("date", "lat", "lon", "alt", "N2O", "CH4")], data, by = "date", all= TRUE)
+
+
+# fill the same altitude of LES in the NA
+# df.merge.1 <- lapply(date, function(daytime){
+#   row <- (which(df.merge$date==daytime)-15):(which(df.merge$date==daytime)+14)
+#   df <- df.merge[row, ]
+#   alt <- mean(df$alt, na.rm = TRUE)
+#   replace_na(df, list(alt = alt))
+# })
+# df.merge <- as.data.frame(do.call(rbind, df.merge.1))
+
+df.fill <- NULL
+for(i in 1:length(date)) {
+  if(identical(which(df.merge$date==date[i]), integer(0))==TRUE) next
+  if(which(df.merge$date==date[i])-15 < 0) next
+  row <- (which(df.merge$date==date[i])-15):(which(df.merge$date==date[i])+14)
+  df.merge.1 <- df.merge[row, ]
+  alt <- mean(df.merge.1$alt, na.rm = TRUE)
+  N2O <- mean(df.merge.1$N2O, na.rm = TRUE)
+  CH4 <- mean(df.merge.1$CH4, na.rm = TRUE)
+  df.fill <- rbind(
+    df.fill, replace_na(df.merge.1, list(alt = alt, N2O = N2O, CH4 = CH4))
+  )
+}
+
+# pick up one transect
+df.merge <- df.fill
+df.merge <- df.merge[df.merge$date>as.POSIXlt("2022-09-05 13:12:00", tz='UTC') & df.merge$date<as.POSIXlt("2022-09-05 13:33:00", tz='UTC'), ]
+les <- les[les$date>as.POSIXlt("2022-09-05 13:12:00", tz='UTC') & les$date<as.POSIXlt("2022-09-05 13:33:00", tz='UTC'), ]
+
+CH4.interp <- approx(les$lat, les$CH4, xout = df.merge$lat.ac, rule=2, method = 'linear', ties = 'mean', na.rm = FALSE)$y
+N2O.interp <- approx(les$lat, les$N2O, xout = df.merge$lat.ac, rule=2, method = 'linear', ties = 'mean', na.rm = FALSE)$y
+
+df.fill <- data.frame(df.merge, CH4.interp, N2O.interp)
+write.csv(df.fill, "D:/1 PhD Studies/1 Data/LES/0905/2022_09_05_latitude_based_interp_les.csv")
+
+df.fill <- mutate(
+  df.fill, 
+  CH4.ac.enhance = CH4.ac.ppb - quantile(df.fill$CH4.ac.ppb, probs = 0.05),
+  N2O.ac.enhance = N2O.ac.ppb - quantile(df.fill$N2O.ac.ppb, probs = 0.05)
+  )
+
+
+#plot
+tiff(paste0("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/LES/", flight, "_latitude_based_interp_LES_close_aircore_CH4.2.tiff"), units="mm", width=300, height=250, res=300)
+scatter3D(df.fill$lon.ac, df.fill$lat.ac, df.fill$alt, colvar = df.fill$CH4.interp, pch=15, bty = "b2", clab = "les: CH4 enhancements [ppb]", colkey = list(dist = -0.1), theta = 10, phi = 40, main = "LES vs measurements", xlab = "longitude", ylab = "latitude", zlab = "altitude [m a.g.l.]", ticktype = "detailed", add = FALSE)
+scatter3D(df.fill$lon.ac, df.fill$lat.ac, df.fill$alt.ac, colvar = df.fill$CH4.ac.enhance, col = viridis(10), colkey = list(side = 2, dist = -0.05), clab = "measurements: CH4 enhancements [ppb]", pch=15, theta = 10, phi = 40, add = TRUE)
+while (!is.null(dev.list()))  dev.off()
+
+
+
+
+
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~3. determine the emissions ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# 3.1 use LES data filled in with the same value within 30 seconds
+df <- read.csv("D:/1 PhD Studies/1 Data/LES/0905/2022_09_05_same_value_fill_in_les.csv")
+df$date <- as.POSIXct(df$date, tz = "UTC")
+df <- df[df$date>as.POSIXlt("2022-09-05 13:12:00", tz='UTC') & df$date<as.POSIXlt("2022-09-05 13:32:00", tz='UTC'), ]
+
+#############
+# N2O
+#############
+# calculate the sum of concentration enhancements of airborne measurements
+bg <- quantile(df$N2O.ac.ppb, probs = c(0.05), na.rm = TRUE); bg
+df <- mutate(df, N2O.ac.enhance = N2O.ac.ppb-bg)
+con.ac <- sum(df$N2O.ac.enhance, na.rm = TRUE)
+
+# calculate the sum of concentration enhancements based on LES
+con.les <- sum(df$N2O, na.rm = TRUE)
+
+emi.les <- 22.55
+emi <- con.ac/con.les*emi.les; print(emi)  # UNIT is Kg/h
+
+#############
+# CH4
+#############
+# calculate the sum of concentration enhancements of airborne measurements
+bg <- quantile(df$CH4.ac.ppb, probs = c(0.05)); bg
+df <- mutate(df, CH4.ac.enhance = CH4.ac.ppb-bg)
+con.ac <- sum(df$CH4.ac.enhance, na.rm = TRUE)
+
+# calculate the sum of concentration enhancements based on LES
+con.les <- sum(df$CH4, na.rm = TRUE)
+
+emi.les <- 22.55
+emi <- con.ac/con.les*emi.les; print(emi)  # UNIT is Kg/h
+
+
+# 3.2 use interpolated LES data
+df <- read.csv("D:/1 PhD Studies/1 Data/LES/2022_09_05_spline_interp_les.csv")
+df <- read.csv("D:/1 PhD Studies/1 Data/LES/2022_09_05_linear_interp_les.csv")
+df <- read.csv("D:/1 PhD Studies/1 Data/LES/0905/2022_09_05_latitude_based_interp_les.csv")
+
+df$date <- as.POSIXct(df$date, tz = "UTC")
+df <- df[df$date>as.POSIXlt("2022-09-05 13:12:00", tz='UTC') & df$date<as.POSIXlt("2022-09-05 13:32:00", tz='UTC'), ]
+
+#############
+# N2O
+#############
+# calculate the sum of concentration enhancements of airborne measurements
+bg <- quantile(df$N2O.ac.ppb, probs = c(0.05), na.rm = TRUE); bg
+df <- mutate(df, N2O.ac.enhance = N2O.ac.ppb-bg)
+con.ac <- sum(df$N2O.ac.enhance, na.rm = TRUE)
+
+# calculate the sum of concentration enhancements based on LES
+con.les <- sum(df$N2O.interp, na.rm = TRUE)
+
+emi.les <- 22.55
+emi <- con.ac/con.les*emi.les; print(emi)  # UNIT is Kg/h
+
+```
+# summaries
+
+

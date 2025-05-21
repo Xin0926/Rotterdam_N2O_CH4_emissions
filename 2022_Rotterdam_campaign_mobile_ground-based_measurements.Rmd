@@ -1,0 +1,3457 @@
+---
+title: "2022_Rotterdam_campaign_mobile_ground-based_measurements"
+author: "Xin Tong"
+date: "`r Sys.Date()`"
+output:
+  word_document:
+    toc: yes
+  html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+    code_folding: hide
+  pdf_document:
+    toc: yes
+    number_sections: yes
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.width= 10, fig.height= 8, fig.align = "center")
+library(ggplot2) # package for plotting
+library(plotly)
+library(RColorBrewer)
+library(ggmap)
+library(ggforce)  # facet_zoom
+library(ggpubr) #stat_regline_equation
+library(gridExtra) #grid.arrange
+library(grid)
+library(gtable) #gtable_filter
+library(ggpmisc)
+library(reshape2)
+library(dplyr)
+library(rWind) # uv2ds     derive the wind speed and direction
+library(suncalc)  # getsunlighttime
+library(geosphere) # calculate the distance with the input of the latitude and longitude
+library(lubridate)
+library(leaflet)
+library(htmlwidgets)
+library(viridis)
+library(readxl)
+library(Metrics)
+sapply(list.files(pattern="[.]R$", path="c:/Users/xin/Dropbox/xin/Rscripts/functions", full.names=TRUE), source)
+
+```
+
+
+\newpage
+# **aggregate the data of mole fractions and wind**
+```{r change the format of data, and split data into different days}
+#| eval = FALSE
+
+# load data
+aerodyne <- read.csv("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/campaign.csv")
+aerodyne <- cbind(aerodyne, date = lubridate::ymd_hms(aerodyne$datetime))
+geometry.new <- strsplit(gsub("[()]", "", aerodyne$geometry), " ")
+aerodyne <- cbind(
+  aerodyne, 
+  lon = as.numeric(sapply(geometry.new,`[`,2)), 
+  lat = as.numeric(sapply(geometry.new,`[`,3))
+  )
+#write.table(aerodyne, file="D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne.csv", sep = ",", row.names = FALSE, col.names=TRUE)
+
+unique_date <- unique(as.Date(aerodyne$date))
+data_for_each_day <- lapply(unique_date, function(day) {
+  subset(aerodyne, date == day)
+})
+
+for (i in seq_along(data_for_each_day)) {
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne_", unique_date[i], ".csv", sep = "")
+  write.csv(data_for_each_day[[i]], file = filename, row.names = FALSE)
+}
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~MIRO~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+miro <- read.csv("D:/1 PhD Studies/1 Data/processed/MIRO/MIRO/campaign.csv")
+miro <- cbind(miro, date = lubridate::ymd_hms(miro$datetime))
+geometry.new <- strsplit(gsub("[()]", "", miro$geometry), " ")
+miro <- cbind(
+  miro, 
+  lon = as.numeric(sapply(geometry.new,`[`,2)), 
+  lat = as.numeric(sapply(geometry.new,`[`,3))
+  )
+#write.table(miro, file="D:/1 PhD Studies/1 Data/processed/MIRO/MIRO/miro.csv", sep = ",", row.names = FALSE, col.names=TRUE)
+
+```
+
+
+```{r save the meteorological data into each day and combine them into mole fractions}
+#| eval = FALSE
+
+wd <- read.csv("D:/1 PhD Studies/1 Data/TNO Aerosol trailer/processed/Vaisala_Meteo/data.csv")
+
+unique_date <- unique(as.Date(wd$datetime))
+data_for_each_day <- lapply(unique_date, function(day) {
+  subset(wd, datetime == day)
+})
+
+for (i in seq_along(data_for_each_day)) {
+  filename <- paste("D:/1 PhD Studies/1 Data/TNO Aerosol trailer/processed/Vaisala_Meteo/meteo_", unique_date[i], ".csv", sep = "")
+  write.csv(data_for_each_day[[i]], file = filename, row.names = FALSE)
+}
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# combine the wd data into the aerodyne measurements
+unique_date <- seq(from = as.Date("2022-08-22", format = "%Y-%m-%d"), to = as.Date("2022-09-07"), by = '1 day')
+for(i in 1:length(unique_date)) {
+    # load data
+    aerodyne <- read.csv(paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne_", unique_date[i], ".csv")) # four records per second
+    wd <- read.csv(paste0("D:/1 PhD Studies/1 Data/TNO Aerosol trailer/processed/Vaisala_Meteo/meteo_", unique_date[i], ".csv")) # one record per minute
+    
+    # merge two dataframes
+    aerodyne$datetime <- as.POSIXct(aerodyne$datetime);
+    wd$datetime <- as.POSIXct(wd$datetime)
+    df <- merge(aerodyne, wd[,c("datetime", "WD", "WS", "WS.std")], by = "datetime", all = TRUE)
+    
+    # save combined data
+    filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne&meteo_", unique_date[i], ".csv", sep = "")
+    write.csv(df, file = filename, row.names = FALSE)
+}
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+```
+
+```{r check the wind from the KNMI stations in Rotterdam}
+#| eval = FALSE
+
+#load knmi station data
+knmi_330 <- read.csv("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/Hoek van Holland_330_2021-2030.txt", sep = ",", skip = 31, header = TRUE); head(knmi_330); str(knmi_330)
+knmi_330 <- knmi_330[knmi_330$YYYYMMDD>20220821 & knmi_330$YYYYMMDD<20220908,]
+
+knmi_343 <- read.csv("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/R'dam Geulhaven_343_2021-2030.txt", sep = ",", skip = 31, header = TRUE); head(knmi_343); str(knmi_343)
+knmi_343 <- knmi_343[knmi_343$YYYYMMDD>20220821 & knmi_343$YYYYMMDD<20220908,]
+
+knmi_344 <- read.csv("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/R'dam airport_344_2021-2030.txt", sep = ",", skip = 31, header = TRUE); head(knmi_344); str(knmi_344)
+knmi_344 <- knmi_344[knmi_344$YYYYMMDD>20220821 & knmi_344$YYYYMMDD<20220908,]
+
+df <- rbind(knmi_330[, c(1:25)], knmi_343[, 1:25], knmi_344[, 1:25])
+
+YY <- as.integer(substr(as.character(df$YYYYMMDD), 1, 4));
+MM <- as.integer(substr(as.character(df$YYYYMMDD), 5, 6));
+DD <- as.integer(substr(as.character(df$YYYYMMDD), 7, 8))
+datetime = as.POSIXct(paste0(YY,'-', MM, '-', DD, " ", df$HH, ":00"), format = '%Y-%m-%d %H:%M', tz = "UTC")
+df <- cbind(df, datetime)
+df <- mutate(df, station = case_when(
+  X..STN==330 ~ "Hoek van Holland", X..STN==343 ~ "R'dam Geulhaven", X..STN==344 ~ "R'dam airport"
+))
+
+# load evides wd data
+wd <- read.csv("D:/1 PhD Studies/1 Data/TNO Aerosol trailer/processed/Vaisala_Meteo/meteo_2022-09-07.csv")
+wd$datetime <- as.POSIXct(wd$datetime, tz = "UTC")
+reference_timestamp <- as.POSIXct(paste0(unique_date[i], " 00:00:00"), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~plot~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+df <- df[as.Date(df$datetime)==unique_date[11],]
+
+#data <- merge(df, wd, by = "datetime", all = TRUE)
+
+p3 <- ggplot()+
+  #geom_line(data, mapping = aes(x = datetime, y = WD))+
+  geom_line(df, mapping = aes(x = datetime, y = DD, colour = station))+
+  theme_bw(base_size = 16)+
+  theme( 
+    legend.position = "top",
+    plot.title=element_text(size=12, hjust=0.5, vjust=0.5, face='bold'), plot.margin = rep(unit(0,"null"),4))
+
+p1 <- ggplot()+
+  geom_line(wd, mapping = aes(x = datetime, y = WD))+
+  theme_bw(base_size = 16)+
+  theme( 
+    legend.position = "top",
+    plot.title=element_text(size=12, hjust=0.5, vjust=0.5, face='bold'), plot.margin = rep(unit(0,"null"),4))
+
+tiff("C:/Users/Xin09/Rplot01.png", units="mm", width=300, height=300, res=100)
+
+grid.arrange(p1, p2, p3, nrow=3)
+while (!is.null(dev.list()))  dev.off()
+
+ggplot(df, mapping = aes(x = datetime, y = DD, colour = station))+
+  geom_boxplot(outlier.shape = NA)+ylim(0, 360)+
+  theme_bw(base_size = 16)+
+  theme( plot.title=element_text(size=12, hjust=0.5, vjust=0.5, face='bold'), plot.margin = rep(unit(0,"null"),4))
+
+ggplot(df, mapping = aes(x = datetime, y = FF, colour = station))+
+  geom_point()+
+  theme_bw(base_size = 16)+
+  theme( plot.title=element_text(size=12, hjust=0.5, vjust=0.5, face='bold'), plot.margin = rep(unit(0,"null"),4))
+
+ggplot(df, mapping = aes(x = datetime, y = FF, colour = station))+
+  geom_point()+
+  theme_bw(base_size = 16)+
+  theme( plot.title=element_text(size=12, hjust=0.5, vjust=0.5, face='bold'), plot.margin = rep(unit(0,"null"),4))
+
+ggplot(df, mapping = aes(x = datetime, y = FH, colour = station))+
+  geom_point()+
+  theme_bw(base_size = 16)+
+  theme( plot.title=element_text(size=12, hjust=0.5, vjust=0.5, face='bold'), plot.margin = rep(unit(0,"null"),4))
+
+
+```
+
+```{r plot wind}
+#| eval = FALSE
+
+unique_date <- seq(from = as.Date("2022-08-17", format = "%Y-%m-%d"), to = as.Date("2022-09-12", format = "%Y-%m-%d"), by = '1 day')
+
+pdf("D:/1 PhD Studies/1 Data/TNO Aerosol trailer/processed/Vaisala_Meteo/plots/wind.pdf")
+for(i in 1: length(unique_date)){
+      wd <- read.csv(paste0("D:/1 PhD Studies/1 Data/TNO Aerosol trailer/processed/Vaisala_Meteo/meteo_", unique_date[i], ".csv")) # one record per 
+      wd$datetime <- as.POSIXct(wd$datetime, tz = "UTC")
+
+      p.wd <- ggplot(wd, mapping = aes(x = datetime, y = WD))+geom_point()+
+        scale_x_datetime(breaks = "30 min", labels = scales::time_format("%H:%M", tz = "UTC"))+
+        theme(axis.text.x = element_text(angle = 90))
+      p.ws <- ggplot(wd, mapping = aes(x = datetime, y = WS))+geom_point()+
+        scale_x_datetime(breaks = "30 min", labels = scales::time_format("%H:%M", tz = "UTC"))+
+        theme(axis.text.x = element_text(angle = 90))
+      
+      grid.arrange(p.wd, p.ws, nrow=2, top = textGrob(unique_date[i]))
+}
+dev.off()
+
+```
+
+
+\newpage
+# **visualization of aerodyne and MIRO**
+```{r load data and plot whole time series for each day}
+#| eval = FALSE
+
+aerodyne <- read.csv("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne.csv", sep = ",")
+aerodyne$date <- as.POSIXct(aerodyne$date)
+miro <- read.csv("D:/1 PhD Studies/1 Data/processed/MIRO/MIRO/miro.csv", sep = ",")
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ plot ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# aerodyne
+# #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+# for(i in 22:31) {
+#     data <- openair::selectByDate(aerodyne, year=2022, month = 8, day = i)
+#     data <- openair::timeAverage(data[, c("date", "X14_N2O_processed", "X14_N2O", "X10_CH4", "X10_CH4_processed")], avg.time = "sec", statistic = "mean")
+# 
+#     p1 <- ggplot(data, mapping = aes(x = date, y = X14_N2O_processed))+geom_point(size=0.5)+xlab("Time")
+#     p2 <- ggplot(data, mapping = aes(x = date, y = X14_N2O))+geom_point(size=0.5)+
+#         facet_zoom(ylim = c(300,400))+xlab("Time")
+#     tiff(paste0("D:/1 PhD Studies/1 Data/processed/plots/N2O.2022yr-Aug", i, ".tiff"),  units="mm", width=150, height=150, res=300)
+#     grid.arrange(p1, p2, nrow = 2, top = paste0("2022yr-Aug", i))    
+#     while (!is.null(dev.list()))  dev.off()
+#     
+#     p3 <- ggplot(data, mapping = aes(x = date, y = X10_CH4_processed))+geom_point(size=0.5)+xlab("Time")
+#     p4 <- ggplot(data, mapping = aes(x = date, y = X10_CH4))+geom_point(size=0.5)+xlab("Time")
+#     tiff(paste0("D:/1 PhD Studies/1 Data/processed/plots/CH4.2022yr-Aug", i, ".tiff"),  units="mm", width=150, height=150, res=300)
+#     grid.arrange(p3, p4, nrow = 2, top = paste0("2022yr-Aug", i))    
+#     while (!is.null(dev.list()))  dev.off()
+# }
+# for(i in 1:7) {
+#     data <- openair::selectByDate(aerodyne, year=2022, month = 9, day = i)
+#     data <- openair::timeAverage(data[, c("date", "X14_N2O_processed", "X14_N2O", "X10_CH4", "X10_CH4_processed")], avg.time = "sec", statistic = "mean")
+#     
+#     p1 <- ggplot(data, mapping = aes(x = date, y = X14_N2O_processed))+geom_point(size=0.5)+xlab("Time")
+#     p2 <- ggplot(data, mapping = aes(x = date, y = X14_N2O))+geom_point(size=0.5)+
+#         facet_zoom(ylim = c(300,400))+xlab("Time")
+#     tiff(paste0("D:/1 PhD Studies/1 Data/processed/plots/N2O.2022yr-sep", i, ".tiff"),  units="mm", width=150, height=150, res=300)
+#     grid.arrange(p1, p2, nrow = 2, top = paste0("2022yr-sep", i))    
+#     while (!is.null(dev.list()))  dev.off()
+#     
+#     p3 <- ggplot(data, mapping = aes(x = date, y = X10_CH4_processed))+geom_point(size=0.5)+xlab("Time")
+#     p4 <- ggplot(data, mapping = aes(x = date, y = X10_CH4))+geom_point(size=0.5)+xlab("Time")
+#     tiff(paste0("D:/1 PhD Studies/1 Data/processed/plots/CH4.2022yr-sep", i, ".tiff"),  units="mm", width=150, height=150, res=300)
+#     grid.arrange(p3, p4, nrow = 2, top = paste0("2022yr-sep", i))    
+#     while (!is.null(dev.list()))  dev.off()
+# }
+# 
+# #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# # MIRO
+# #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+# for(i in 22:31) {
+#     data <- openair::selectByDate(miro, year=2022, month = 8, day = i)
+#     data <- openair::timeAverage(data[, c("date", "X2_N2O_processed", "X2_N2O", "X6_CH4", "X6_CH4_processed")], avg.time = "sec", statistic = "mean")
+#     
+#     p1 <- ggplot(data, mapping = aes(x = date, y = X2_N2O_processed))+geom_point(size=0.5)+xlab("Time")
+#     p2 <- ggplot(data, mapping = aes(x = date, y = X2_N2O))+geom_point(size=0.5)+
+#         facet_zoom(ylim = c(300,400))+xlab("Time")
+#     tiff(paste0("D:/1 PhD Studies/1 Data/processed/MIRO/MIRO/plots/N2O.2022yr-Aug", i, ".tiff"),  units="mm", width=150, height=150, res=300)
+#     grid.arrange(p1, p2, nrow = 2, top = paste0("2022yr-Aug", i))    
+#     while (!is.null(dev.list()))  dev.off()
+#     
+#     p3 <- ggplot(data, mapping = aes(x = date, y = X6_CH4_processed))+geom_point(size=0.5)+xlab("Time")
+#     p4 <- ggplot(data, mapping = aes(x = date, y = X6_CH4))+geom_point(size=0.5)+xlab("Time")
+#     tiff(paste0("D:/1 PhD Studies/1 Data/processed/MIRO/MIRO/plots/CH4.2022yr-Aug", i, ".tiff"),  units="mm", width=150, height=150, res=300)
+#     grid.arrange(p3, p4, nrow = 2, top = paste0("2022yr-Aug", i))    
+#     while (!is.null(dev.list()))  dev.off()
+# }
+# for(i in 1:7) {
+#     data <- openair::selectByDate(miro, year=2022, month = 9, day = i)
+#     data <- openair::timeAverage(data[, c("date", "X2_N2O_processed", "X2_N2O", "X6_CH4", "X6_CH4_processed")], avg.time = "sec", statistic = "mean")
+#     
+#     p1 <- ggplot(data, mapping = aes(x = date, y = X2_N2O_processed))+geom_point(size=0.5)+xlab("Time")
+#     p2 <- ggplot(data, mapping = aes(x = date, y = X2_N2O))+geom_point(size=0.5)+
+#         facet_zoom(ylim = c(300,400))+xlab("Time")
+#     tiff(paste0("D:/1 PhD Studies/1 Data/processed/MIRO/MIRO/plots/N2O.2022yr-Sep", i, ".tiff"),  units="mm", width=150, height=150, res=300)
+#     grid.arrange(p1, p2, nrow = 2, top = paste0("2022yr-Sep", i))    
+#     while (!is.null(dev.list()))  dev.off()
+#     
+#     p3 <- ggplot(data, mapping = aes(x = date, y = X6_CH4_processed))+geom_point(size=0.5)+xlab("Time")
+#     p4 <- ggplot(data, mapping = aes(x = date, y = X6_CH4))+geom_point(size=0.5)+xlab("Time")
+#     tiff(paste0("D:/1 PhD Studies/1 Data/processed/MIRO/MIRO/plots/CH4.2022yr-Sep", i, ".tiff"),  units="mm", width=150, height=150, res=300)
+#     grid.arrange(p3, p4, nrow = 2, top = paste0("2022yr-Sep", i))    
+#     while (!is.null(dev.list()))  dev.off()
+# }
+```
+Both of aerodyne and miro show similar problems, the value of processed data is not reasonable compared to original data. The value of aerodyne and miro have several ppb difference, but the pattern of data and enhancements are almost the same.
+
+
+```{r plot 2D concentration map}
+#| eval = FALSE
+#| 
+
+# load the city boundary of Rotterdam
+library(geodata) # gadm
+d <- gadm("Netherlands", level=2, path="c:/users/xin09/", version="latest", resolution=1)
+rotterdam <- geom(d[341,], df = TRUE)
+
+
+plot_each_source <- function(data) {
+          range.lat <- c(min(data$lat, na.rm = TRUE)-0.001, max(data$lat, na.rm = TRUE)+0.001)
+          range.lon <- c(min(data$lon, na.rm = TRUE)-0.001, max(data$lon, na.rm = TRUE)+0.001)
+          sbbox <- make_bbox(lon = range.lon, lat = range.lat, f = .2)
+
+    # get map, not a google map since it has been asked to pay for it
+    map.flight = get_map(location=sbbox, zoom=12, maptype = c("terrain"), source = "stamen", scale = "auto") # use ggmap(map) in ggplot environment to plot
+
+    my_palette <- viridis(10, option = "D")    
+    
+    # wind.df <- data.frame(
+    #   wd = mean(data$wd, na.rm = TRUE),
+    #   ws = mean(data$ws, na.rm = TRUE),
+    #   lon = mean(data$lon, na.rm = TRUE),
+    #   lat = mean(data$lat, na.rm = TRUE)
+    # )
+    
+# The distance [m] per degree of latitude and longitude
+    R=6371000
+    per.lat <- pi*R/180
+    per.lon <- pi*R/180*cos(mean(data$lat, na.rm = TRUE)*pi/180)
+    p <- ggmap(map.flight)
+        + geom_point(data = data, mapping = aes(x = lon, y = lat, colour = enhancement), size = 0.1)
+        + scale_colour_gradientn(colours = my_palette)
+    
+        #geom_point(data = WWTP, mapping = aes(x = lon, y = lat), shape = 'diamond')+
+        #geom_polygon(rotterdam, mapping = aes(x = x, y = y), fill = 'darkgrey', colour='grey', alpha = 0.4)+
+    #         geom_segment(wind.df,
+    #                      mapping = aes(x = lon, y = lat, xend = lon - 5000*sin(wd*pi/180)/per.lon, yend = lat - 5000*cos(wd*pi/180)/per.lat), 
+    #                      arrow = arrow(length = unit(0.1, "npc")),
+    #                      linewidth = 2
+    # )+
+    
+        + labs(colour =  "N2O", x = 'Longitude [deg]', y = 'Latitude [deg]')
+        + theme_classic()
+        + theme_bw(base_size = 16)
+        + theme( 
+          plot.title=element_text(size=12, hjust=0.5, vjust=0.5, face='bold'),
+          plot.margin = rep(unit(0,"null"),4),
+          axis.title.x = element_text(size=12), axis.text.x = element_text(size=12),
+          axis.title.y = element_text(size=12), axis.text.y = element_text(size=12)
+        )
+  
+      return(p)
+  }
+    
+    plot_each_source(plume.1)
+      
+      tiff(paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/plots/", unique_date[i], "/", unique_date[i], '_2D_',  "X14_N2O", '_map.tiff'),  units="mm", width=150, height=150, res=300)
+
+
+
+"#440154FF" "#482878FF"
+ [3] "#3E4A89FF" "#31688EFF"
+ [5] "#26828EFF" "#1F9E89FF"
+ [7] "#35B779FF" "#6DCD59FF"
+ [9] "#B4DE2CFF" "#FDE725FF"
+
+```
+
+```{r plot interactive concentration map using leaflet}
+#| eval = FALSE
+#| 
+
+# LOAD the locations of WWTP
+WWTP <- readxl::read_xlsx("D:/1 PhD Studies/1 Data/Rotterdam_campaign_2022/WWTP_unvalid.xlsx")
+
+# load the city boundary of Rotterdam
+library(geodata) # gadm
+d <- gadm("Netherlands", level=2, path="c:/users/xin09/", version="latest", resolution=1)
+rotterdam <- geom(d[341,], df = TRUE)
+
+
+names <- c( "X14_N2O.ppb", "X10_CH4.ppb")
+names.1 <- c( "X14_N2O", "X10_CH4")
+unique_date <- seq(from = as.Date("2022-08-22"), to = as.Date("2022-09-07"), by = '1 day')
+
+for(i in 1:length(unique_date)) {
+  
+    data <- read.csv(paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne_", unique_date[i], ".csv"))
+    #if(diff(range(data$lon))<0.1) next # do not move???
+    
+    for(col in colnames(data)){
+      
+    if(col!="X10_CH4" && col!="X14_N2O") next
+    
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    # filter data: outliers 
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    if(col=="X14_N2O"){
+      data <- data[which(data$X14_N2O>300 & data$X14_N2O<1500), c("date", "wsp", "wdir", "lon", "lat", "X14_N2O")];
+      range <- c(300, 500)
+    } else {
+      data <- data[which(data$X10_CH4>1800 & data$X10_CH4<2800), c("date", "wsp", "wdir", "lon", "lat", "X10_CH4")];
+      range <- c(1900, 2100)
+    }
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    
+    data$date <- as.POSIXct(data$date)
+    df <- openair::timeAverage(data, avg.time = "sec", statistic = "mean")
+    data <- as.data.frame(data)
+
+my_palette <- viridis(10, option = "D")
+    
+    # Define a color scale based on concentration values
+color_scale <- colorNumeric(
+  palette = my_palette,  # Define a color palette
+  domain = df$X14_N2O  # Specify the concentration values
+)    
+
+# Create a leaflet map
+map <- leaflet(df) %>%
+  addTiles()  # Add a tile layer (you can customize the tile source)
+
+# Add markers for concentrations
+map <- map %>%
+  addCircleMarkers(
+    lng = ~lon,
+    lat = ~lat,
+    radius = 1,  # Adjust marker size based on concentration
+    color = ~color_scale(X14_N2O),    
+    fillOpacity = 0.7,
+    popup = ~paste("Concentration:", X14_N2O)
+  )
+map
+# save the map
+saveWidget(map, file = paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/plots/", unique_date[i], "X14_N2O", ".html"))
+      
+}
+    }
+
+
+"#440154FF" "#482878FF"  "#1F9D89" "#FDE725"
+ [3] "#3E4A89FF" "#31688EFF"
+ [5] "#26828EFF" "#1F9E89FF"
+ [7] "#35B779FF" "#6DCD59FF"
+ [9] "#B4DE2CFF" "#FDE725FF"
+```
+
+```{r interactive plot of concentrations VS time series using plotly}
+#| eval = FALSE
+#| 
+
+plot <- ggplot(df, mapping = aes(x = date, y = X14_N2O))+geom_point()
+print(plot)   
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~plot N2O ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+if(option=='series'){
+  plot <- plot_ly(df_list[[17]], x = ~date, y = ~X14_N2O, type = "scatter", mode = "markers")
+
+# Customize the plot (add titles, labels, etc.) using layout()
+plot <- plot %>% layout(
+  title = paste0(unique_date[i], "_aerodyne_N2O"),
+  xaxis = list(title = "X-axis Label"),
+  yaxis = list(title = "N2O [ppb]")
+)
+
+# save the map
+saveWidget(plot, file = paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/plots/", unique_date[i], "/", unique_date[i], "_aerodyne_N2O_time_series.1.", ".html"))
+}
+if(option=='map'){
+      my_palette <- viridis(10, option = "D")    
+
+    plot <- plot_ly(df_list[[17]], x = ~lon, y = ~lat,                 
+                    mode = "markers",
+                type = "scatter",
+                color = ~X14_N2O,
+                #colors = my_palette,
+                marker = list(color = ~X14_N2O, colorscale = my_palette),
+                text = paste("<br>Longitude:",round(df_list[[17]]$lon, 5), '[&deg;]',
+                             "<br>Latitude:",round(df_list[[17]]$lat,5), '[&deg;]',
+                             "<br>N2O:", as.character(round(df_list[[17]]$X14_N2O, 2)), '[ppb]',
+                             '<br>UTC_Time:', as.character(df_list[[17]]$date))
+) %>%  colorbar(title = 'N2O [ppb]', len=1) %>%
+
+  layout(scene = list(xaxis = list(title = 'Longitude [deg]', range = c(min(df_list[[17]]$lon) - 0.001, max(df_list[[17]]$lon) + 0.001)),
+                      yaxis = list(title = 'Latitude [deg]', range = c(min(df_list[[17]]$lat) - 0.001, max(df_list[[17]]$lat) + 0.001)))
+         ) 
+
+# save the map
+saveWidget(plot, file = paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/plots/", unique_date[i], "/", unique_date[i], "_aerodyne_N2O_map.", ".html"))
+
+}
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~plot CH4 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+plot <- plot_ly(df, x = ~date, y = ~value, color = ~variable, type = "scatter", mode = "markers")
+
+# Customize the plot (add titles, labels, etc.) using layout()
+plot <- plot %>% layout(
+  title = paste0(unique_date[i], "_aerodyne_CH4"),
+  xaxis = list(title = "X-axis Label"),
+  yaxis = list(title = "CH4 [ppb]")
+)
+
+# save the map
+saveWidget(plot, file = paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/plots/", unique_date[i], "_aerodyne_CH4_time_series", ".html"))
+      
+}
+    
+
+```
+
+
+
+\newpage
+# **Optimize the emissions using gaussian model**
+
+```{r load point sources}
+#| eval = FALSE
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# LOAD the locations of WWTP;
+# two options: unvalid WWTP locations based on google map OR valid locations from dutch inventory
+option <- 2
+  
+if(option==1){
+  WWTP <- readxl::read_xlsx("D:/1 PhD Studies/1 Data/Rotterdam_campaign_2022/WWTP_unvalid.xlsx")
+}
+if(option==2){
+  WWTP <- read.csv("D:/1 PhD Studies/1 Data/Inventory/Dutch_Inventory/N2O_CH4_CO2_CO_emission_Rotterdam_area_company_2020_2021_2022.csv")
+
+# select locations of WWTP
+condition <- WWTP$Sector=="Sewerage and wastewater treatment plants" & 
+  #WWTP$Sector=="Refineries" & 
+  #WWTP$Sector=="Energy" & 
+  #WWTP$Sector=="Waste Disposal" &
+  #WWTP$Sector=="Chemical Industry") &
+  WWTP$Stof=="Distikstofoxide" &
+  #WWTP$Stof== "Methaan" &
+  # WWTP$lon > 3.95 & WWTP$lon < 4.27 & 
+  # WWTP$lat > 51.82 & WWTP$lat < 52.00 & 
+  WWTP$Jaar==2020
+
+WWTP <- subset(WWTP, condition)
+
+# sum up emissions of each WWTP 
+WWTP <- group_by(WWTP, lon, lat, Sector, Bedrijf) %>% summarise(emission = sum(Emissie)); 
+WWTP <- as.data.frame(WWTP)
+
+}
+
+if(option==3){
+  WWTP <- read.table("D:/1 PhD Studies/1 Data/Rotterdam_campaign_2022/refinery_unvalid.txt", sep = ",", header = TRUE)
+}
+if(option==4){
+  WWTP <- read.table("D:/1 PhD Studies/1 Data/Rotterdam_campaign_2022/power_plant_unvalid.txt", sep = ",", header = TRUE)
+}
+if(option==5){
+  WWTP <- read.table("D:/1 PhD Studies/1 Data/Rotterdam_campaign_2022/gas_station_unvalid.txt", sep = ",", header = TRUE)
+}
+```
+
+```{r select data near point sources}
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# select the transects downwind the sources
+
+R=6371000
+per.lat <- pi*R/180
+per.lon <- pi*R/180*cos(mean(data$lat, na.rm = TRUE)*pi/180)
+
+
+# LOAD FUCNTIONS
+sapply(list.files(pattern="[.]R$", path="c:/Users/xin09/Dropbox/xin/Rscripts/functions", full.names=TRUE), source)
+
+# LOAD DATA
+unique_date <- seq(from = as.Date("2022-08-22", format = "%Y-%m-%d"), to = as.Date("2022-09-07"), by = '1 day')
+
+# unique_time <- seq(
+#   from = as.POSIXct(paste0(unique_date[i], " 06:00:00"), tz = "UTC"), 
+#   to = as.POSIXct(paste0(unique_date[i], " 18:00:00"), tz = "UTC"), 
+#   by = '1 h')
+
+
+for(j in c(5,8)) {
+
+  #plume <- NULL
+
+for(i in 1:17){
+  
+  data <- read.csv(paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne&meteo_", unique_date[i], ".csv"))
+data$date <- as.POSIXct(data$date, tz = "UTC")
+reference_timestamp <- as.POSIXct(paste0(unique_date[i], " 00:00:00"), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+# Calculate the difference in seconds between the timestamp and reference timestamp
+data <- cbind(
+  data, time = as.numeric(difftime(data$date, reference_timestamp, units = "secs"))
+)
+
+
+
+# for(j in 1:12){
+  # df <- data[data$date>unique_time[j] & data$date<unique_time[j+1], ]
+  # if(length(na.omit(df[, "date"]))==0) next
+  
+  df <- data
+  # convert to per second
+  df <- group_by(df, time, date) %>% summarise(
+    CH4 = mean(X10_CH4, na.rm = TRUE), 
+    lon = mean(lon, na.rm = TRUE),
+    lat = mean(lat, na.rm = TRUE),
+    wd = mean(WD, na.rm = TRUE),
+    ws = mean(WS, na.rm = TRUE))
+  df <- as.data.frame(df)
+  
+  # gaussian smoothing
+  # gaussian <- as.data.frame(gau.sm(df, 5, 'CH4'))
+  # df <- merge(df, gaussian[,-3], by='time'); names(df)[names(df)=='smooth'] <- 'smooth.CH4'
+  
+  # rolling quantile and mean
+  library(zoo)
+  z <- zoo(df$CH4, order.by = df$date)
+  quantile_5 <- zoo::rollapply(z, width = 600, quantile, probs = 0.05, na.rm = TRUE)
+  quantile_df <- fortify.zoo(quantile_5);
+  names(quantile_df)[1] <- "date";
+  names(quantile_df)[2] <- "bg"
+
+  z <- zoo(df$lon, order.by = df$date)
+  lon.rolling <- zoo::rollmean(z, k = 10, na.rm = TRUE)
+  lon.df <- fortify.zoo(lon.rolling);
+  names(lon.df)[1] <- "date";
+  names(lon.df)[2] <- "lon.rolling"
+  
+  z <- zoo(df$lat, order.by = df$date)
+  lat.rolling <- zoo::rollmean(z, k = 10, na.rm = TRUE)
+  lat.df <- fortify.zoo(lat.rolling)
+  names(lat.df)[1] <- "date";
+  names(lat.df)[2] <- "lat.rolling"
+  
+  list <- list(df, quantile_df, lon.df, lat.df)
+  df.rolling <- Reduce(function(...) merge(..., all = TRUE, by = 'date'), list)
+  
+  # Calculate the change in coordinates
+  diff_lon <- c(0, diff(df.rolling$lon)) 
+  diff_lat <- c(0, diff(df.rolling$lat)) 
+  
+  # Check if the change in both X and Y is zero for each row
+  no_movement <- abs(diff_lon) <= 0.00005 & abs(diff_lat) <= 0.00001
+  no_movement <- na.omit(no_movement)
+  # Remove rows with no movement
+  df_filter <- df.rolling;
+  df_filter[no_movement, c('CH4', 'smooth.CH4')] <- NA
+  df_filter$enhancement <- df_filter$CH4-df_filter$bg
+  
+  
+      # 1st round filtering for a rough range
+      df_filter.1 <- df_filter[which(df_filter$lon>(WWTP$lon[j]-0.01) & df_filter$lon<(WWTP$lon[j]+0.01) & df_filter$lat>(WWTP$lat[j]-0.01) & df_filter$lat<(WWTP$lat[j]+0.01)),]
+      if(nrow(df_filter.1)==0 ) next
+
+      # 2st round filtering to pick up downwind transects
+      # wind <- colMeans(df[, c('lon', 'lat', 'WD','WS')], na.rm = TRUE);
+      # wind <- data.frame(lon = wind[1], lat = wind[2], WD = wind[3], WS = wind[4])
+      # WD.mean <- mean.cir(na.omit(df)$WD)
+      # 
+      # df$Bearing <- sapply(1:nrow(df), function(n) {
+      #     bearing(c(WWTP$lon[j], WWTP$lat[j]), c(df[n, "lon"], df[n, "lat"]))
+      #     })
+      # 
+      # if (WD.mean < 90) {
+      #   condition <- abs(WD.mean - df$Bearing) > 90
+      # } else if (WD.mean < 270 && WD.mean > 90) {
+      #   condition <- (df$Bearing > 0 & abs(WD.mean - df$Bearing) > 90) |
+      #          (df$Bearing < 0 & (360 - WD.mean + df$Bearing) > 90)
+      #   } else {
+      #     condition <- (df$Bearing > 0 & (WD.mean - 180 - df$Bearing) < 90) |
+      #          (df$Bearing < 0 & (WD.mean - 360 - 90 > df$Bearing))
+      #     }
+      # df_filter <- subset(df, condition)
+      # if(nrow(df_filter)==0) next
+      
+      # extract the plume
+      # plume.1 <- df.rolling[which(df.rolling$lon>(WWTP$lon[j]-0.01) & df.rolling$lon<(WWTP$lon[j]+0.01) & df.rolling$lat>(WWTP$lat[j]-0.01) & df.rolling$lat<(WWTP$lat[j]+0.01)),]
+      # # combine the information of the point source
+      # plume <- rbind(plume, data.frame(
+      #   plume.1,
+      #   index = WWTP$Bedrijf[j],
+      #   source = 'WWTP',
+      #   lon.source = WWTP$lon[j], lat.source = WWTP$lat[j],
+      #   emission = WWTP$emission[j]
+      # ))
+      
+      #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ plot map ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      my_palette <- viridis(10, option = "D") 
+      p <- ggplot(df_filter.1)+
+        geom_line(mapping = aes(x = lon, y = lat, colour = enhancement))+
+        scale_colour_gradientn(colours = my_palette)+
+        geom_point(WWTP[j,], mapping = aes(x = lon, y = lat))
+      
+      tiff(paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/plots/", unique_date[i], "/", unique_date[i], '_2D_',  "X10_CH4_WWTP_", WWTP$Bedrijf[j], '_map.tiff'),  units="mm", width=150, height=150, res=300)
+      print(p)
+      dev.off()
+      
+      plot <- plot_ly(df_filter.1, x = ~date, y = ~CH4, type = "scatter", mode = "markers") %>%
+        add_lines(x = ~date, y = ~bg, name = "Line")
+      saveWidget(plot, file = paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/plots/", unique_date[i], "/", unique_date[i], "_aerodyne_CH4_time_series_WWTP_", WWTP$Bedrijf[j], ".html"))
+
+    }
+
+  # filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/", WWTP$Bedrijf[j], "_CH4_plume.csv", sep = "")
+  # write.csv(plume, file = filename, row.names = FALSE)
+}
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    # if(sum(sapply(df_list, nrow))==0) next
+    # 
+    # for(j in 1:length(df_list)) {
+    #   if(nrow(df_list[[j]]!=0)) {
+    #       print(paste0(unique_date[i], "_source", j, range(df_list[[j]]$date)))
+    #   }
+    # }
+    # 
+    # p_list <- lapply(df_list, plot_each_source)
+    # 
+    # for(k in 1: length(p_list)) {
+    #   tiff(paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/plots/", unique_date[i], "/", unique_date[i], '_2D_',  "X14_N2O_source", k, '_map.tiff'),  units="mm", width=150, height=150, res=300)
+    #   print(p_list[[k]])
+    #   dev.off()
+    # }
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# select data nearby WWTPs
+    # lon.range <- data.frame(lower = unique(WWTP$lon)-0.01, upper = unique(WWTP$lon)+0.01);
+    # lon.range <- split(lon.range, seq(nrow(lon.range)))
+    # lat.range <- data.frame(lower = WWTP$lat-0.01, upper = WWTP$lat+0.01);
+    # lat.range <- split(lat.range, seq(nrow(lat.range)))
+    # 
+    # 
+    # df_list_lon <- lapply(lon.range, function(range) {
+    #   # Filter data based on the current range
+    #   filtered_data <- data[which(data$lon > range$lower & data$lon < range$upper), ]
+    #   return(filtered_data)
+    # })
+    # df_list_lat <- lapply(lat.range, function(range) {
+    #   # Filter data based on the current range
+    #   filtered_data <- data[data$lat > range$lower & data$lat < range$upper, ]
+    #   return(filtered_data)
+    # })
+    # 
+    # df <- do.call(rbind, df_list_lon)
+# select data nearby WWTPs
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```
+
+## **check potential plumes of WWTPs**
+```{r RWZI Rotterdam-Hoogvliet save potential plumes into .csv files for check in google earth}
+
+
+for(i in c(5,8,10,11,17)) {
+  
+data <- read.csv(paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne&meteo_", unique_date[i], ".csv"))
+data$date <- as.POSIXct(data$date, tz = "UTC")
+reference_timestamp <- as.POSIXct(paste0(unique_date[i], " 00:00:00"), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+# Calculate the difference in seconds between the timestamp and reference timestamp
+data <- cbind(
+  data, time = as.numeric(difftime(data$date, reference_timestamp, units = "secs"))
+)
+
+if(i==5) {
+  
+  condition <- data.frame(
+    min = c(9*3600+32*60, 10*3600+39*60, 13*3600+47*60, 15*3600+16*60),
+    max = c(9*3600+34*60, 10*3600+41*60, 13*3600+49*60, 15*3600+19*60)
+  )
+  
+  for(j in 1:nrow(condition)) {
+    
+  plume <- data[data$time >= condition$min[j] & data$time < condition$max[j], ]
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Rotterdam-Hoogvliet_plume/", unique_date[i], "_plume_", j, ".csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+  }
+
+}
+
+
+if(i==8) {
+  
+  condition <- data.frame(
+    min = c(11*3600+59*60+45),
+    max = c(12*3600+1*60)
+  )
+  
+  for(j in 1:nrow(condition)) {
+    
+  plume <- data[data$time >= condition$min[j] & data$time < condition$max[j], ]
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Rotterdam-Hoogvliet_plume/", unique_date[i], "_plume_", j, ".csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+  }
+
+}
+
+
+if(i==10) {
+  
+  condition <- data.frame(
+    min = c(8*3600+24*60, 8*3600+25*60+10, 8*3600+26*60+10),
+    max = c(8*3600+25*60+10, 8*3600+26*60+10, 8*3600+27*60+15)
+  )
+  
+  for(j in 1:nrow(condition)) {
+    
+  plume <- data[data$time >= condition$min[j] & data$time < condition$max[j], ]
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Rotterdam-Hoogvliet_plume/", unique_date[i], "_plume_", j, ".csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+  }
+
+}
+
+
+if(i==11) {
+  
+  condition <- data.frame(
+    min = c(13*3600+43*60+30),
+    max = c(13*3600+45*60)
+  )
+  
+  for(j in 1:nrow(condition)) {
+    
+  plume <- data[data$time >= condition$min[j] & data$time < condition$max[j], ]
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Rotterdam-Hoogvliet_plume/", unique_date[i], "_plume_", j, ".csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+  }
+
+}
+
+
+if(i==17) {
+  
+  condition <- data.frame(
+    min = c(13*3600+41*60),
+    max = c(13*3600+43*60)
+  )
+  
+  for(j in 1:nrow(condition)) {
+    
+  plume <- data[data$time >= condition$min[j] & data$time < condition$max[j], ]
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Rotterdam-Hoogvliet_plume/", unique_date[i], "_plume_", j, ".csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+  }
+
+}
+
+}
+
+```
+
+```{r RWZI Nieuwe Waterweg save potential plumes into .csv files for check in google earth}
+
+
+for(i in c(3, 17)) {
+  
+  data <- read.csv(paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne&meteo_", unique_date[i], ".csv"))
+data$date <- as.POSIXct(data$date, tz = "UTC")
+reference_timestamp <- as.POSIXct(paste0(unique_date[i], " 00:00:00"), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+# Calculate the difference in seconds between the timestamp and reference timestamp
+data <- cbind(
+  data, time = as.numeric(difftime(data$date, reference_timestamp, units = "secs"))
+)
+
+if(i==3) {
+  
+  condition <- data.frame(
+    min = c(11*3600+44*60, 11*3600+45*60),
+    max = c(11*3600+45*60, 11*3600+47*60)
+  )
+  
+  for(j in 1:nrow(condition)) {
+    
+  plume <- data[data$time >= condition$min[j] & data$time < condition$max[j], ]
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Nieuwe Waterweg/", unique_date[i], "_plume_", j, ".csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+  }
+
+}
+
+
+if(i==17) {
+  
+  condition <- data.frame(
+    min = c(11*3600+44*60, 12*3600+14*60, 12*3600+16*60+15, 13*3600+8*60),
+    max = c(11*3600+45*60, 12*3600+16*60+15, 12*3600+17*60+15, 13*3600+9*60)
+  )
+  
+  for(j in 1:nrow(condition)) {
+    
+  plume <- data[data$time >= condition$min[j] & data$time < condition$max[j], ]
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Nieuwe Waterweg/", unique_date[i], "_plume_", j, ".csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+  }
+
+}
+
+
+}
+
+```
+
+```{r RWZI Rozenburg save potential plumes into .csv files for check in google earth}
+
+data <- read.csv(paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne&meteo_", unique_date[17], ".csv"))
+data$date <- as.POSIXct(data$date, tz = "UTC")
+reference_timestamp <- as.POSIXct(paste0(unique_date[17], " 00:00:00"), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+# Calculate the difference in seconds between the timestamp and reference timestamp
+data <- cbind(
+  data, time = as.numeric(difftime(data$date, reference_timestamp, units = "secs"))
+)
+
+min <- 13*3600;
+max <- 13*3600+1*60+30
+
+  plume <- data[data$time >= min & data$time < max, ]
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Rozenburg/", unique_date[17], "_plume.csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+```
+
+```{r RWZI Rotterdam-Dokhaven save potential plumes into .csv files for check in google earth}
+
+data <- read.csv(paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne&meteo_", unique_date[2], ".csv"))
+data$date <- as.POSIXct(data$date, tz = "UTC")
+reference_timestamp <- as.POSIXct(paste0(unique_date[2], " 00:00:00"), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+# Calculate the difference in seconds between the timestamp and reference timestamp
+data <- cbind(
+  data, time = as.numeric(difftime(data$date, reference_timestamp, units = "secs"))
+)
+
+condition <- data.frame(
+  min = c(9*3600+55*60+30, 9*3600+56*60+30, 10*3600+30, 10*3600+1*60+50),
+  max = c(9*3600+56*60+30, 9*3600+58*60, 10*3600+1*60, 10*3600+2*60+30)
+)
+
+for(j in 1:nrow(condition)) {
+  plume <- data[data$time >= condition$min[j] & data$time < condition$max[j], ]
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Rotterdam-Dokhaven/", unique_date[2], "_plume_", j, ".csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+}
+
+```
+
+```{r RWZI Barendrecht save potential plumes into .csv files for check in google earth}
+
+for(i in c(5, 8)) {
+  
+data <- read.csv(paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne&meteo_", unique_date[i], ".csv"))
+data$date <- as.POSIXct(data$date, tz = "UTC")
+reference_timestamp <- as.POSIXct(paste0(unique_date[i], " 00:00:00"), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+# Calculate the difference in seconds between the timestamp and reference timestamp
+data <- cbind(
+  data, time = as.numeric(difftime(data$date, reference_timestamp, units = "secs"))
+)
+
+condition <- data.frame(
+  min = c(15*3600+27*60+45, 7*3600+52*60+45),
+  max = c(15*3600+28*60+37, 7*3600+53*60+30)
+)
+
+if(i==5){
+    plume <- data[data$time >= condition$min[1] & data$time < condition$max[1], ]
+}
+
+if(i==8){
+    plume <- data[data$time >= condition$min[2] & data$time < condition$max[2], ]
+}
+
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Barendrecht/", unique_date[i], "_plume.csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+}  
+
+
+```
+
+```{r RWZI Capelle-Groenedijk save potential plumes into .csv files for check in google earth}
+
+data <- read.csv(paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne&meteo_", unique_date[5], ".csv"))
+data$date <- as.POSIXct(data$date, tz = "UTC")
+reference_timestamp <- as.POSIXct(paste0(unique_date[5], " 00:00:00"), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+# Calculate the difference in seconds between the timestamp and reference timestamp
+data <- cbind(
+  data, time = as.numeric(difftime(data$date, reference_timestamp, units = "secs"))
+)
+
+min <- 12*3600+50*60;
+max <- 12*3600+51*60+30
+
+  plume <- data[data$time >= min & data$time < max, ]
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Capelle-Groenedijk/", unique_date[5], "_plume.csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+```
+
+```{r RWZI Ridderkerk save potential plumes into .csv files for check in google earth}
+
+data <- read.csv(paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne&meteo_", unique_date[8], ".csv"))
+data$date <- as.POSIXct(data$date, tz = "UTC")
+reference_timestamp <- as.POSIXct(paste0(unique_date[8], " 00:00:00"), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+# Calculate the difference in seconds between the timestamp and reference timestamp
+data <- cbind(
+  data, time = as.numeric(difftime(data$date, reference_timestamp, units = "secs"))
+)
+
+min <- 9*3600+46*60+40;
+max <- 9*3600+49*60
+
+  plume <- data[data$time >= min & data$time < max, ]
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Ridderkerk/", unique_date[8], "_plume.csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+```
+
+```{r BP Rotterdam refinery  save potential plumes into .csv files for check in google earth}
+for(i in c(5, 10, 11)) {
+  
+data <- read.csv(paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne&meteo_", unique_date[i], ".csv"))
+data$date <- as.POSIXct(data$date, tz = "UTC")
+reference_timestamp <- as.POSIXct(paste0(unique_date[i], " 00:00:00"), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+# Calculate the difference in seconds between the timestamp and reference timestamp
+data <- cbind(
+  data, time = as.numeric(difftime(data$date, reference_timestamp, units = "secs"))
+)
+
+if(i==5) {
+  
+  condition <- data.frame(
+    min = c(9*3600+46*60+30, 10*3600+24*60, 14*3600+2*60+15, 15*3600+2*60+30),
+    max = c(9*3600+48*60+30, 10*3600+26*60, 14*3600+3*60+5, 15*3600+4*60)
+  )
+  
+  for(j in 1:nrow(condition)) {
+    
+  plume <- data[data$time >= condition$min[j] & data$time < condition$max[j], ]
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/BP Rotterdam refinery/", unique_date[i], "_plume_", j, ".csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+  }
+
+}
+
+if(i==10) {
+  
+  condition <- data.frame(
+    min = c(10*3600+33*60+30, 11*3600+50*60+30),
+    max = c(10*3600+35*60, 11*3600+52*60)
+  )
+  
+  for(j in 1:nrow(condition)) {
+    
+  plume <- data[data$time >= condition$min[j] & data$time < condition$max[j], ]
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/BP Rotterdam refinery/", unique_date[i], "_plume_", j, ".csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+  }
+
+}
+
+if(i==11) {
+  
+  condition <- data.frame(
+    min = c(11*3600+32*60+30, 11*3600+43*60+30, 11*3600+45*60+30, 13*3600+29*60+30),
+    max = c(11*3600+34*60, 11*3600+45*60, 11*3600+48*60+30, 13*3600+31*60)
+  )
+  
+  for(j in 1:nrow(condition)) {
+    
+  plume <- data[data$time >= condition$min[j] & data$time < condition$max[j], ]
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/BP Rotterdam refinery/", unique_date[i], "_plume_", j, ".csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+  }
+
+}
+
+}
+```
+
+```{r Uniper Centrale Maasvlakte    save potential plumes into .csv files for check in google earth}
+for(i in c(10, 11)) {
+  
+data <- read.csv(paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne&meteo_", unique_date[i], ".csv"))
+data$date <- as.POSIXct(data$date, tz = "UTC")
+reference_timestamp <- as.POSIXct(paste0(unique_date[i], " 00:00:00"), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+# Calculate the difference in seconds between the timestamp and reference timestamp
+data <- cbind(
+  data, time = as.numeric(difftime(data$date, reference_timestamp, units = "secs"))
+)
+
+
+if(i==10) {
+  
+  condition <- data.frame(
+      min = c(10*3600+40*60+30),
+      max = c(10*3600+41*60+50)
+  )
+  
+  for(j in 1:nrow(condition)) {
+    
+  plume <- data[data$time >= condition$min[j] & data$time < condition$max[j], ]
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/Uniper Centrale Maasvlakte/", unique_date[i], "_plume_", j, ".csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+  }
+
+}
+
+if(i==11) {
+  
+  condition <- data.frame(
+    min = c(12*3600+14*60+30),
+    max = c(12*3600+15*60+59)
+  )
+  
+  for(j in 1:nrow(condition)) {
+    
+  plume <- data[data$time >= condition$min[j] & data$time < condition$max[j], ]
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/Uniper Centrale Maasvlakte/", unique_date[i], "_plume_", j, ".csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+  }
+
+}
+
+}
+```
+
+```{r AVR NV (Rijnmond) save potential plumes into .csv files for check in google earth}
+for(i in c(2, 17)) {
+  
+data <- read.csv(paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne&meteo_", unique_date[i], ".csv"))
+data$date <- as.POSIXct(data$date, tz = "UTC")
+reference_timestamp <- as.POSIXct(paste0(unique_date[i], " 00:00:00"), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+# Calculate the difference in seconds between the timestamp and reference timestamp
+data <- cbind(
+  data, time = as.numeric(difftime(data$date, reference_timestamp, units = "secs"))
+)
+
+
+if(i==2) {
+  
+  condition <- data.frame(
+    min = c(11*3600+33*60),
+    max = c(11*3600+35*60)
+  )
+  
+  for(j in 1:nrow(condition)) {
+    
+  plume <- data[data$time >= condition$min[j] & data$time < condition$max[j], ]
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/AVR NV (Rijnmond)/", unique_date[i], "_plume_", j, ".csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+  }
+
+}
+
+if(i==17) {
+  
+  condition <- data.frame(
+    min = c(12*3600+50*60+30, 12*3600+54*60+5),
+    max = c(12*3600+52*60, 12*3600+54*60+30)
+  )
+  
+  for(j in 1:nrow(condition)) {
+    
+  plume <- data[data$time >= condition$min[j] & data$time < condition$max[j], ]
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/AVR NV (Rijnmond)/", unique_date[i], "_plume_", j, ".csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+  }
+
+}
+
+
+}
+```
+
+```{r Enecal Energy VOF  save potential plumes into .csv files for check in google earth}
+for(i in c(5, 10, 17)) {
+  
+data <- read.csv(paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne&meteo_", unique_date[i], ".csv"))
+data$date <- as.POSIXct(data$date, tz = "UTC")
+reference_timestamp <- as.POSIXct(paste0(unique_date[i], " 00:00:00"), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+# Calculate the difference in seconds between the timestamp and reference timestamp
+data <- cbind(
+  data, time = as.numeric(difftime(data$date, reference_timestamp, units = "secs"))
+)
+
+if(i==5) {
+  
+  condition <- data.frame(
+      min = c(9*3600+38*60, 13*3600+52*60+42),
+      max = c(9*3600+38*60+46, 13*3600+53*60+46)
+  )
+  
+  for(j in 1:nrow(condition)) {
+    
+  plume <- data[data$time >= condition$min[j] & data$time < condition$max[j], ]
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/Enecal Energy VOF/", unique_date[i], "_plume_", j, ".csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+  }
+
+}
+
+if(i==10) {
+  
+  condition <- data.frame(
+      min = c(9*3600+53*60+21),
+      max = c(9*3600+55*60)
+  )
+  
+  for(j in 1:nrow(condition)) {
+    
+  plume <- data[data$time >= condition$min[j] & data$time < condition$max[j], ]
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/Enecal Energy VOF/", unique_date[i], "_plume_", j, ".csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+  }
+
+}
+
+if(i==17) {
+  
+  condition <- data.frame(
+    min = c(12*3600+56*60),
+    max = c(12*3600+57*60)
+  )
+  
+  for(j in 1:nrow(condition)) {
+    
+  plume <- data[data$time >= condition$min[j] & data$time < condition$max[j], ]
+  filename <- paste("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/Enecal Energy VOF/", unique_date[i], "_plume_", j, ".csv", sep = "")
+  write.csv(plume, file = filename, row.names = FALSE)
+
+  }
+
+}
+
+}
+```
+There are maximum four plumes for emission calculation using gaussian dispersion plume model. So far, only calculated the emissions using the plume on august-26-2 and sep-7.
+
+
+## **for the plume calculate the bg and enhancement**
+```{r save the plume with bg and enhancemnt into a .csv file}
+#####################
+# AWZI Kralingseveer
+#####################
+
+plume <- NULL
+data <- read.csv(paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne&meteo_",  "2022-09-07.csv"))
+data$date <- as.POSIXct(data$date, tz = "UTC")
+reference_timestamp <- as.POSIXct(paste0(unique_date[i], " 00:00:00"), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+# Calculate the difference in seconds between the timestamp and reference timestamp
+data <- cbind(
+  data, time = as.numeric(difftime(data$date, reference_timestamp, units = "secs"))
+)
+
+  min <- 14*3600+1*60;
+  max <- 14*3600+5*60
+data <- data[data$time > min & data$time < max, ]
+data <- data.frame(data, index = 1, bg = quantile(data$X14_N2O, probs = 0.05, na.rm = TRUE));
+data <- mutate(data, enhancement = X14_N2O-bg)
+plume <- rbind(plume, data)
+
+plume <- data.frame(plume, WWTP[7,]);
+names(plume)[names(plume)=="lon.1"] <- "lon.source"
+names(plume)[names(plume)=="lat.1"] <- "lat.source"
+
+filename <- "D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/AWZI Kralingseveer/2022-09-07_plume.csv"
+write.csv(plume, file = filename, row.names = FALSE)
+
+##########################
+# RWZI Rotterdam-Hoogvliet
+##########################
+
+plume <- NULL
+data <- read.csv("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Rotterdam-Hoogvliet/2022-08-26_plume_2.csv")
+data <- data.frame(data, index = 1, bg = quantile(data$X14_N2O, probs = 0.05, na.rm = TRUE));
+data <- mutate(data, enhancement = X14_N2O-bg)
+plume <- rbind(plume, data)
+
+data <- read.csv("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Rotterdam-Hoogvliet/2022-08-31_plume_2.csv")
+data <- data.frame(data, index = 2, bg = quantile(data$X14_N2O, probs = 0.05, na.rm = TRUE));
+data <- mutate(data, enhancement = X14_N2O-bg)
+plume <- rbind(plume, data)
+
+data <- read.csv("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Rotterdam-Hoogvliet/2022-09-07_plume_1.csv")
+data <- data.frame(data, index = 3, bg = quantile(data$X14_N2O, probs = 0.05, na.rm = TRUE));
+data <- mutate(data, enhancement = X14_N2O-bg)
+plume <- rbind(plume, data)
+
+plume <- data.frame(plume, WWTP[4,]);
+names(plume)[names(plume)=="lon.1"] <- "lon.source"
+names(plume)[names(plume)=="lat.1"] <- "lat.source"
+
+filename <- "D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Rotterdam-Hoogvliet_plume.csv"
+write.csv(plume, file = filename, row.names = FALSE)
+
+
+##########################
+# RWZI Nieuwe Waterweg
+##########################
+
+plume <- NULL
+data <- read.csv("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Nieuwe Waterweg/2022-08-24_plume_2.csv")
+data <- data.frame(data, index = 1, bg = quantile(data$X14_N2O, probs = 0.05));
+data <- mutate(data, enhancement = X14_N2O-bg)
+plume <- rbind(plume, data)
+
+data <- read.csv("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Nieuwe Waterweg/2022-09-07_plume_1.csv")
+data <- data.frame(data, index = 2, bg = quantile(data$X14_N2O, probs = 0.05, na.rm = TRUE));
+data <- mutate(data, enhancement = X14_N2O-bg)
+plume <- rbind(plume, data)
+
+data <- read.csv("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Nieuwe Waterweg/2022-09-07_plume_3.csv")
+data <- data.frame(data, index = 3, bg = quantile(data$X14_N2O, probs = 0.05, na.rm = TRUE));
+data <- mutate(data, enhancement = X14_N2O-bg)
+plume <- rbind(plume, data)
+
+plume <- data.frame(plume, WWTP[1,]);
+names(plume)[names(plume)=="lon.1"] <- "lon.source"
+names(plume)[names(plume)=="lat.1"] <- "lat.source"
+
+filename <- "D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Nieuwe Waterweg_plume.csv"
+write.csv(plume, file = filename, row.names = FALSE)
+
+##########################
+# RWZI Rozenburg
+##########################
+
+plume <- NULL
+data <- read.csv("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Rozenburg/2022-09-07_plume.csv")
+data <- data.frame(data, index = 1, bg = quantile(data$X14_N2O, probs = 0.05, na.rm = TRUE));
+data <- mutate(data, enhancement = X14_N2O-bg)
+plume <- rbind(plume, data)
+
+plume <- data.frame(plume, WWTP[2,]);
+names(plume)[names(plume)=="lon.1"] <- "lon.source"
+names(plume)[names(plume)=="lat.1"] <- "lat.source"
+
+filename <- "D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Rozenburg_plume.csv"
+write.csv(plume, file = filename, row.names = FALSE)
+
+##########################
+# RWZI Barendrecht
+##########################
+
+plume <- NULL
+data <- read.csv("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Barendrecht/2022-08-26_plume.csv")
+data <- data.frame(data, index = 1, bg = quantile(data$X14_N2O, probs = 0.05, na.rm = TRUE));
+data <- mutate(data, enhancement = X14_N2O-bg)
+plume <- rbind(plume, data)
+
+data <- read.csv("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Barendrecht/2022-08-29_plume.csv")
+data <- data.frame(data, index = 2, bg = quantile(data$X14_N2O, probs = 0.05, na.rm = TRUE));
+data <- mutate(data, enhancement = X14_N2O-bg)
+plume <- rbind(plume, data)
+
+plume <- data.frame(plume, WWTP[6,]);
+names(plume)[names(plume)=="lon.1"] <- "lon.source"
+names(plume)[names(plume)=="lat.1"] <- "lat.source"
+
+filename <- "D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Barendrecht_plume.csv"
+write.csv(plume, file = filename, row.names = FALSE)
+
+##########################
+# RWZI Ridderkerk
+##########################
+
+plume <- NULL
+data <- read.csv("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Ridderkerk/2022-08-29_plume.csv")
+data <- data.frame(data, index = 1, bg = quantile(data$X14_N2O, probs = 0.05, na.rm = TRUE));
+data <- mutate(data, enhancement = X14_N2O-bg)
+plume <- rbind(plume, data)
+
+plume <- data.frame(plume, WWTP[9,]);
+names(plume)[names(plume)=="lon.1"] <- "lon.source"
+names(plume)[names(plume)=="lat.1"] <- "lat.source"
+
+filename <- "D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Ridderkerk_plume.csv"
+write.csv(plume, file = filename, row.names = FALSE)
+
+##########################
+# RWZI Rotterdam-Dokhaven
+##########################
+
+plume <- NULL
+data <- read.csv("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Rotterdam-Dokhaven/2022-08-23_plume.csv")
+data <- data.frame(data, index = 1, bg = quantile(data$X14_N2O, probs = 0.05, na.rm = TRUE));
+data <- mutate(data, enhancement = X14_N2O-bg)
+plume <- rbind(plume, data)
+
+plume <- data.frame(plume, WWTP[5,]);
+names(plume)[names(plume)=="lon.1"] <- "lon.source"
+names(plume)[names(plume)=="lat.1"] <- "lat.source"
+
+filename <- "D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Rotterdam-Dokhaven_plume.csv"
+write.csv(plume, file = filename, row.names = FALSE)
+
+##########################
+# RWZI Capelle-Groenedijk
+##########################
+data <- read.csv("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/RWZI Capelle-Groenedijk/2022-08-26_plume.csv")
+
+```
+
+## **calculation of gaussian model**
+In the following R code section, I load the selected plume and try to use the gaussian plume model to calculate the emissions. The idea is to first calculate the dispersion parameters sigma_Y and sigma_Z, and then optimize the emissions by comparing the enhancement areas RATHER THAN the enhancement height.
+
+The dispersion parameters can be calculated by using the stability class OR the direct turbulence measurement. As for the wind direction, there are two ways to determine that. (1) Draw a line to connect the maximum concentration and the source location. The line indicates the wind direction. (2) Use the wind direction measured at Edives when car is driving inland and use the wind direction measured at a KNMI station near the coastal line when a car is driving along the coastal line. The first way needs to know exactly where the emissions come from. If there are several POINT sources, and the downwind transects are very close to them, it is very hard to determine one location to represent the several point sources. Maybe use the center to represent the cluster of several point sources??
+
+in Arjan's model, he used an euqtion including roughness length etc to calculate dispersion parameters
+
+```{r load functions for gaussian calculation}
+###################################################################################
+############################## LOAD FUNCTIONS ###################
+###################################################################################
+# The distance [m] per degree of latitude and longitude
+find_meter_per_deg <- function(data) {
+  R=6371000
+  per.lat <- pi*R/180
+  per.lon <- pi*R/180*cos(mean(data$lat, na.rm = TRUE)*pi/180)
+
+  return(c(per.lon, per.lat))
+}
+
+# calculate the distance [m] between two points
+distance_points <- function(lon, lat, lon.zero, lat.zero, df) {
+  sqrt(
+    ((lon-lon.zero)*find_meter_per_deg(df)[1])^2+((lat-lat.zero)*find_meter_per_deg(df)[2])^2
+    )
+}
+
+# create a function to find the coors of the point showing gas concentrations
+# find_max_coors <- function(data, col){
+#   lon <- data[which.max(data[, "col"]), 'lon'];
+#   lat <- data[which.max(data[, "col"]), 'lat']
+#   return(c(lon, lat))
+# }
+
+find_wd_peak <- function(lon.source, lat.source, data) {
+  lon <- data[which.max(data$enhancement), 'lon'];
+  lat <- data[which.max(data$enhancement), 'lat']
+  angle <- bearing(c(lon.source, lat.source), c(lon, lat))
+  
+  return(angle)
+}
+
+acute_angle_between_wd_transect <- function(lon.zero, lat.zero, lon, lat, wd) {
+  if(is.na(lon)) {
+    return(NA)
+  } 
+  
+  if(!is.na(lon)) {
+    
+  if(lon <= lon.zero) {
+      bearing <- bearing(c(lon, lat), c(lon.zero, lat.zero))
+  } else {
+      bearing <- bearing( c(lon.zero, lat.zero), c(lon, lat))
+  }
+
+  if(wd >= 0 ) {
+    return(abs(wd-bearing))
+  } else {
+    return(abs(180-abs(wd)-bearing))
+  }
+    }
+  
+}
+
+# sigma_z and sigma_y calculation
+if(option=="urban"){
+
+  # x in meters
+  # sigma_y and sigma_z are in meters
+
+  find_sigma_y = function(x, stabil.class) {
+  
+  switch(stabil.class, 
+         
+         A = {sigma_y <- 0.32*x*(1+0.0004*x)^(-0.5)  },
+         B = {sigma_y <- 0.32*x*(1+0.0004*x)^(-0.5)  },
+         C = {sigma_y <- 0.22*x*(1+0.0004*x)^(-0.5)  },
+         D = {sigma_y <- 0.16*x*(1+0.0004*x)^(-0.5)  },
+         E = {sigma_y <- 0.11*x*(1+0.0004*x)^(-0.5)  },
+         F = {sigma_y <- 0.11*x*(1+0.0004*x)^(-0.5)  }
+         
+  )
+  
+  return(sigma_y)
+  
+}
+
+  find_sigma_z = function(x, stabil.class) {
+  
+  switch(stabil.class, 
+         
+         A = {sigma_z <- 0.24*x*(1+0.001*x)^0.5  },
+         B = {sigma_z <- 0.24*x*(1+0.001*x)^0.5  },
+         C = {sigma_z <- 0.20*x  },
+         D = {sigma_z <- 0.14*x*(1+0.0003*x)^(-0.5)  },
+         E = {sigma_z <- 0.08*x*(1+0.0015*x)^(-0.5)  },
+         F = {sigma_z <- 0.08*x*(1+0.0015*x)^(-0.5)  }
+         
+  )
+  
+  return(sigma_z)
+  
+}
+
+}
+
+if(option=="rural"){
+
+  # x in kilometers
+  # sigma_y and sigma_z are in meters
+   find_sigma_y = function(x, stabil.class) {
+  
+   switch(stabil.class, 
+         
+         A = {sigma_y <- 465.11628*x*tan(0.017453293*(24.1670-2.5334*log(x)))  },
+         B = {sigma_y <- 465.11628*x*tan(0.017453293*(18.3330-1.8096*log(x)))  },
+         C = {sigma_y <- 465.11628*x*tan(0.017453293*(12.5-1.0857*log(x)))  },
+         D = {sigma_y <- 465.11628*x*tan(0.017453293*(8.3330-0.72382*log(x)))  },
+         E = {sigma_y <- 465.11628*x*tan(0.017453293*(6.2500-0.54287*log(x)))  },
+         F = {sigma_y <- 465.11628*x*tan(0.017453293*(4.1667-0.36191*log(x)))  }
+         
+  )
+  
+  return(sigma_y)
+  
+}
+
+   find_sigma_z = function(x, stabil.class) {
+  
+   switch(stabil.class, 
+         
+         A = {
+           if(x>0.16 & x <0.2){a=170.220; b=1.09320}
+           if(x>0.21 & x <0.25){a=179.520; b=1.12620}
+           if(x>0.26 & x <0.30){a=217.410; b=1.26440}
+           if(x>0.31 & x <0.40){a=258.890; b=1.40940}
+           },
+         B = {
+           if(x <0.2){a=90.673; b=0.93198}
+           if(x>0.21 & x <0.40){a=98.483; b=0.98332}
+           if(x>0.40){a=109.300; b=1.09710}
+           },
+         C = {a = 61.141; b = 0.91465},
+         D = {
+           if(x <0.3){a=34.459; b=0.86974}
+           if(x>0.31 & x <1.00){a=32.093; b=0.81066}
+           },
+         E = {
+           if(x > 0.1 & x < 0.3){a=23.331; b=0.81956}
+           if(x > 0.31 & x < 1.00){a=21.628; b=0.75660}
+           },
+         F = {
+           if(x < 0.2){a=15.209; b=0.81558}
+           if(x > 0.21 & x < 0.7){a=14.457; b=0.78407}
+           if(x > 0.71 & x < 1.0){a=13.953; b=0.68465}
+           }
+  )
+           
+     sigma_z <- a*x^b
+
+  return(sigma_z)
+  
+}
+
+}
+
+# the unit of parameters
+# output_concentrations: ppb
+# emission rate Q: g/second
+# sigma_y: the horizontal dispersion parameter with a unit of [m]
+# sigma_z: the vertical dispersion parameter with a unit of [m]
+# h: the effective height of source with a unit of [m]
+# y: the distance following crosswind direction with a unit of [m]
+# perpendicular wind speed_u: m/s
+# M: molar weight with a unit of g/mol
+# in this equation, the water vapor pressure is not taken into account
+
+gaussian_model_c <- function(Q, sigma_y, sigma_z, h, u, y, M){
+  return(
+    Q/(2*pi*sigma_y*sigma_z*u)*exp(-0.5*(y/sigma_y)^2)*(exp(-0.5*((h-3)/sigma_z)^2) + exp(-0.5*((h+3)/sigma_z)^2))/M*8.314*298.15/101325/(10^(-9))
+  )
+}
+
+```
+
+```{r load selected plume and estimate the emissions}
+
+# i=8
+# # LOAD DATA
+# unique_date <- seq(from = as.Date("2022-08-22", format = "%Y-%m-%d"), to = as.Date("2022-09-07"), by = '1 day')
+# 
+# unique_time <- seq(
+#   from = as.POSIXct(paste0(unique_date[i], " 06:00:00"), tz = "UTC"), 
+#   to = as.POSIXct(paste0(unique_date[i], " 18:00:00"), tz = "UTC"), 
+#   by = '1 h')
+
+data <- read.csv("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/AWZI Kralingseveer/2022-08-26_plume.csv")
+data$date <- as.POSIXct(data$date,format = "%Y-%m-%d %H:%M:%OS")
+
+#data <- data.frame(data, index = 1, bg = quantile(data$N2O, probs = 0.05, na.rm = TRUE));
+data$bg <- quantile(data$N2O, probs = 0.05, na.rm = TRUE)
+data <- mutate(data, enhancement = N2O-bg)
+
+# check each transect
+#df <- data[data$index==1 & data$time<(10*3600+34*60+32) & data$time>(10*3600+33*60+50),]  #0824_1
+df <- data[data$index==5
+           # & data$time>(6*3600+29*60+40) 
+           # & data$time<(6*3600+32*60+23)
+           ,]; 
+range(df$date, na.rm = TRUE) 
+
+# # Uniper central Maasvlake
+# df <- data[data$time < (12*3600+15*60+20), ]
+# # Energy VOF
+# df <- data[data$time> (13*3600+53*60+14),]
+# df <- data[data$time > (12*3600+56*60+23), ]
+# # Waste disposal-AVR NV (Rijnmond)
+# df <- data[data$time> (11*3600+33*60+40) & data$time< (11*3600+34*60+23),]
+# df <- data[data$time> (12*3600+50*60+46) & data$time< (12*3600+51*60+19),]
+# # Refineries
+# df <- data[data$time > (14*3600+2*60+28), ]
+
+lon.source <- WWTP$lon[7] 
+lat.source <- WWTP$lat[7] 
+
+  
+#write.csv(df, paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/downwind_transects/AWZI Kralingseveer/", unique_date[i], "_plume_", unique(df$index), ".csv"))
+
+plot <- plot_ly(df, x = ~lon, y = ~lat, color = ~enhancement, type = 'scatter', mode = 'markers',
+                text = paste("<br>Longitude:",round(df$lon, 5), '[&deg;]',
+                             "<br>Latitude:",round(df$lat,5), '[&deg;]',
+                             "<br>N2O:", as.character(round(df$enhancement, 2)), '[ppb]',
+                             '<br>UTC_Time:', as.character(df$date))
+                ) %>%
+  add_markers( x = lon.source, y = lat.source, mode = "markers") 
+  #add_markers( x = WWTP$lon[4], y = WWTP$lat[4], mode = "markers") 
+
+saveWidget(plot, file = paste0("C:/Users/Xin09/_transect.html"))
+
+# zoom in transect
+# if(unique_date[i]=="2022-08-29" & unique(na.omit(df$index))==1) {
+#   df <- df[df$time > (9*3600+21*60+6) & df$time < (9*3600+21*60+47), ]
+# }
+
+
+###################################################################################
+############################## calculate modelled concentration ###################
+###################################################################################
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# convert the coordinates into distance [m] along the virtual plane perpendicular to wind direction
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  # the original zero point is set as the point showing up maximum concentration
+  lon.zero <- df[which.max(df$enhancement), 'lon'];
+  lat.zero <- df[which.max(df$enhancement), 'lat']
+  angle <- bearing(c(lon.source, lat.source), c(lon.zero, lat.zero))
+
+beta <- NULL
+df <- df[which(!is.na(df)),]
+transect <- NULL
+for(i in 1: nrow(df)){
+  beta <- c(beta, acute_angle_between_wd_transect(lon.zero, lat.zero, df[i, "lon"], df[i, "lat"], angle))
+}
+df$beta <- beta
+
+  df.1 <- df[df$lat >= lat.zero, ]
+  df.1 <- mutate(
+    df.1,
+    distance = distance_points(lon, lat, lon.zero, lat.zero, df)*sin(beta*pi/180)
+  )
+  
+  df.2 <- df[df$lat < lat.zero, ]
+  df.2 <- mutate(
+    df.2,
+    distance = -0.1*distance_points(lon, lat, lon.zero, lat.zero, df)*sin(beta*pi/180)
+  )
+transect <- rbind(df.1, df.2)
+
+# if(is.na(df$lon[i])){
+#   distance <- NA
+# } else if(df$lon[i] >= lon.zero) {
+#   distance = -0.1*distVincentySphere(c(df$lon[i], df$lat[i]), c(lon.zero, lat.zero))*sin(beta*pi/180)
+# } else {
+#   distance = distVincentySphere(c(df$lon[i], df$lat[i]), c(lon.zero, lat.zero))*sin(beta*pi/180)
+# }
+# transect <- rbind(transect, data.frame(df[i,], distance))
+
+
+# if(option=="urban"){
+#   dn.distance <- sqrt(((lon.source-lon.zero)*find_meter_per_deg(df)[1])^2+((lat.source-lat.zero)*find_meter_per_deg(df)[2])^2)
+# }
+# if(option=="rural"){
+#   dn.distance <- sqrt(((lon.source-lon.zero)*find_meter_per_deg(df)[1])^2+((lat.source-lat.zero)*find_meter_per_deg(df)[2])^2)/1000
+# }
+
+
+dn.distance <- 232
+output <- NULL
+for(class in c("B", "C", "D")) {
+  for(ws in c(4, 4.3, 5)) {
+    for(h in c(4)) {
+      
+sigma_y <- find_sigma_y(dn.distance, class);
+sigma_z <- find_sigma_z(dn.distance, class)
+
+Q <- 1;
+emi <- NULL
+for(M in c(44, 16)) {
+  
+model = gaussian_model_c(Q, sigma_y, sigma_z, h, ws, transect$distance, M)
+
+# optimize emissions by comparing the enhancement areas
+meas_integral <- sum(( transect$enhancement[-length(transect$enhancement)]+transect$enhancement[-1] )*diff(transect$distance)/2, na.rm = TRUE)
+
+model_integral <- sum((model[-length(model)]+model[-1])*diff(transect$distance)/2, na.rm = TRUE)
+
+emi <- c(emi, meas_integral*Q/model_integral)
+
+}
+
+output <- rbind(
+  output, data.frame(
+    stability = class, ws = ws, h.source = h, N2O.emission = emi[1], CH4.emission = emi[2]
+  )
+)
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ plot ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# calculate the optimized N2O concentration  
+# Q <- emi
+# df.gau <- cbind(df.gau, N2O.optimal = gaussian_model_c(Q, sigma_y, sigma_z, h, ws, df.gau$distance, M))
+# 
+# melt <- melt(df.gau, measure.vars = c("enhancement", "N2O.model", "N2O.optimal"))
+# 
+# p <- ggplot(melt, mapping = aes(x = distance, y = value, colour = variable))+geom_line()+
+#     scale_color_discrete(name = c("enhancement", "N2O.model", "N2O.optimal"), labels = c("Measurements", "Model", "Optimized model"))+
+#     theme_bw()+
+#   theme(
+#     legend.position = c(0.7, 0.7),
+#     legend.text = element_text(size =8), legend.title = element_blank(),
+#     legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+#     legend.background = element_rect(fill = "transparent", colour = NA),
+#     legend.key = element_rect(fill = NA, colour = NA))+
+#      ylab( bquote(''*N[2]*O*' enhancement [ppb]') )+xlab('distance [m]')
+# 
+# tiff(paste0("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/plume_meas_model/AWZI Kralingseveer/08-26_4_AWZI Kralingseveer_", class, "_", ws, "_", h,"_", emi, ".tiff"), units="mm", width=100, height=75, res=300)
+# print(p)
+# while (!is.null(dev.list()))  dev.off()
+
+    }
+  }
+}
+
+write.csv(output, "D:/1 PhD Studies/3.1 Results of projects/2022_Rotterdam_Campaign/Xin_IGM_Estimates/09-06_1_AWZI Kralingseveer.csv")
+
+
+
+```
+
+```{r load selected plume and estimate CH4 emissions from WWTP}
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~ load data ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+data.list <- list()
+for(i in 1:length(unique_date)){
+  
+  unique_date <- seq(from = as.Date("2022-08-22", format = "%Y-%m-%d"), to = as.Date("2022-09-07"), by = '1 day')
+  
+  data <- read.csv(paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne&meteo_", unique_date[i], ".csv"))
+  data$date <- as.POSIXct(data$date, tz = "UTC")
+  reference_timestamp <- as.POSIXct(paste0(unique_date[i], " 00:00:00"), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+  # Calculate the difference in seconds between the timestamp and reference timestamp
+  data <- cbind(
+    data, time = as.numeric(difftime(data$date, reference_timestamp, units = "secs"))
+  )
+  
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ pick up the plume ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+if(name=="Kralingsevee") {
+  
+  if(unique_date[i]==as.Date("2022-08-24", tz = UTC)){
+  condition <- data$time>(10*3600+33*60+50) & data$time<(10*3600+34*60+32)  
+  data.list[] <- data[condition, ]
+  condition <- data$time>(12*3600+36*60+38) & data$time<(12*3600+37*60+30)
+  data.list[] <- data[condition, ]
+}
+  if(unique_date[i]==as.Date("2022-08-26", tz = UTC)){
+  condition <- data$time>(9*3600+13*60+30) & data$time<(9*3600+14*60+30)
+  data.list[] <- data[condition, ]
+
+  condition <- data$time>(12*3600+38*60+30) & data$time<(12*3600+39*60+30)
+  data.list[] <- data[condition, ]
+
+  condition <- data$time>(12*3600+41*60+30) & data$time<(12*3600+42*60+30)
+  data.list[] <- data[condition, ]
+  
+  condition <- data$time>(13*3600+11*60) & data$time<(13*3600+12*60+30)
+  data.list[] <- data[condition, ]
+  
+  condition <- data$time>(13*3600+25*60) & data$time<(13*3600+26*60+30)
+  data.list[] <- data[condition, ]
+
+  }
+  if(unique_date[i]==as.Date("2022-08-29", tz = UTC)){
+  condition <- data$time>(9*3600+21*60) & data$time<(9*3600+21*60+50)
+  data.list[] <- data[condition, ]
+
+  condition <- data$time>(9*3600+26*60) & data$time<(9*3600+27*60+30)
+  data.list[] <- data[condition, ]
+
+  #condition <- data$time>(10*3600+13*60) & data$time<(10*3600+14*60+30)
+  condition <- data$time>(13*3600+37*60+30) & data$time<(13*3600+38*60)
+  data.list[] <- data[condition, ]
+
+}
+  if(unique_date[i]==as.Date("2022-09-06", tz = UTC)){
+  condition <- data$time>(6*3600+29*60+40) & data$time<(6*3600+32*60+23)
+  data.list[] <- data[condition, ]
+
+}
+
+}
+
+
+  
+if(name=="Barendrecht") {
+  if(unique_date[i]==as.Date("2022-08-29", tz = UTC)){
+    condition <- data$time>(7*3600+52*60+33) & data$time<(7*3600+53*60+30)
+  }
+}
+  
+if(name=="Ridderkerk") {
+  if(unique_date[i]==as.Date("2022-08-29", tz = UTC)){
+    condition <- data$time>(9*3600+46*60) & data$time<(9*3600+49*60)
+  }
+}
+
+if(name=="Rozenburg") {
+  if(unique_date[i]==as.Date("2022-08-31", tz = UTC)){
+    condition <- data$time>(8*3600+52*60) & data$time<(8*3600+53*60)
+  }
+}
+
+
+df <- data[condition,]
+df$bg <- quantile(df$X10_CH4, probs = 0.05, na.rm = TRUE)
+df <- mutate(df, enhancement = X10_CH4-bg)
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ check the plume ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+lon.source <- WWTP$lon[WWTP$Bedrijf=="RWZI Rotterdam-Dokhaven"] 
+lat.source <- WWTP$lat[WWTP$Bedrijf=="RWZI Rotterdam-Dokhaven"] 
+
+plot <- plot_ly(df, x = ~lon, y = ~lat, color = ~enhancement, type = 'scatter', mode = 'markers',
+                text = paste("<br>Longitude:",round(df$lon, 5), '[&deg;]',
+                             "<br>Latitude:",round(df$lat,5), '[&deg;]',
+                             "<br>N2O:", as.character(round(df$enhancement, 2)), '[ppb]',
+                             '<br>UTC_Time:', as.character(df$date))
+                ) %>%
+  add_markers( x = lon.source, y = lat.source, mode = "markers", color = "pink") 
+
+saveWidget(plot, file = paste0("C:/Users/Xin09/_transect.html"))
+mean(df$WD, na.rm = TRUE)
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# convert the coordinates into distance [m] along the virtual plane perpendicular to wind direction
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  # the original zero point is set as the point showing up maximum concentration
+  lon.zero <- df[which.max(df$enhancement), 'lon'];
+  lat.zero <- df[which.max(df$enhancement), 'lat']
+  angle <- bearing(c(lon.source, lat.source), c(lon.zero, lat.zero))
+
+beta <- NULL
+df <- df[which(!is.na(df)),]
+transect <- NULL
+for(i in 1: nrow(df)){
+  beta <- c(beta, acute_angle_between_wd_transect(lon.zero, lat.zero, df[i, "lon"], df[i, "lat"], angle))
+}
+df$beta <- beta
+
+  df.1 <- df[df$lat >= lat.zero, ]
+  df.1 <- mutate(
+    df.1,
+    distance = distance_points(lon, lat, lon.zero, lat.zero, df)*sin(beta*pi/180)
+  )
+  
+  df.2 <- df[df$lat < lat.zero, ]
+  df.2 <- mutate(
+    df.2,
+    distance = -0.1*distance_points(lon, lat, lon.zero, lat.zero, df)*sin(beta*pi/180)
+  )
+transect <- rbind(df.1, df.2)
+transect <- arrange(transect, time)
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ calculate emissions ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+if(option=="urban"){
+  dn.distance <- sqrt(((lon.source-lon.zero)*find_meter_per_deg(df)[1])^2+((lat.source-lat.zero)*find_meter_per_deg(df)[2])^2)
+}
+# if(option=="rural"){
+#   dn.distance <- sqrt(((lon.source-lon.zero)*find_meter_per_deg(df)[1])^2+((lat.source-lat.zero)*find_meter_per_deg(df)[2])^2)/1000
+# }
+
+output <- NULL
+for(class in c("B", "C", "D")) {
+  for(ws in c(7.6)) {
+    for(h in c(4)) {
+      
+sigma_y <- find_sigma_y(dn.distance, class);
+sigma_z <- find_sigma_z(dn.distance, class)
+
+Q <- 1;
+emi <- NULL
+M <- 16
+model = gaussian_model_c(Q, sigma_y, sigma_z, h, ws, transect$distance, M)
+
+# optimize emissions by comparing the enhancement areas
+meas_integral <- sum(( transect$enhancement[-length(transect$enhancement)]+transect$enhancement[-1] )*diff(transect$distance)/2, na.rm = TRUE)
+
+model_integral <- sum((model[-length(model)]+model[-1])*diff(transect$distance)/2, na.rm = TRUE)
+
+CH4.emi <- meas_integral*Q/model_integral
+
+output <- rbind(
+  output, data.frame(
+    stability = class, ws = ws, h.source = h, CH4.emi
+  )
+)
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ plot ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# calculate the optimized N2O concentration  
+# Q <- emi
+# df.gau <- cbind(df.gau, N2O.optimal = gaussian_model_c(Q, sigma_y, sigma_z, h, ws, df.gau$distance, M))
+# 
+# melt <- melt(df.gau, measure.vars = c("enhancement", "N2O.model", "N2O.optimal"))
+# 
+# p <- ggplot(melt, mapping = aes(x = distance, y = value, colour = variable))+geom_line()+
+#     scale_color_discrete(name = c("enhancement", "N2O.model", "N2O.optimal"), labels = c("Measurements", "Model", "Optimized model"))+
+#     theme_bw()+
+#   theme(
+#     legend.position = c(0.7, 0.7),
+#     legend.text = element_text(size =8), legend.title = element_blank(),
+#     legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+#     legend.background = element_rect(fill = "transparent", colour = NA),
+#     legend.key = element_rect(fill = NA, colour = NA))+
+#      ylab( bquote(''*N[2]*O*' enhancement [ppb]') )+xlab('distance [m]')
+# 
+# tiff(paste0("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/plume_meas_model/AWZI Kralingseveer/08-26_4_AWZI Kralingseveer_", class, "_", ws, "_", h,"_", emi, ".tiff"), units="mm", width=100, height=75, res=300)
+# print(p)
+# while (!is.null(dev.list()))  dev.off()
+
+    }
+  }
+}
+
+write.csv(output, "D:/1 PhD Studies/3.1 Results of projects/2022_Rotterdam_Campaign/Xin_IGM_Estimates/08_31_CH4_RWZI Rozenburg.csv")
+
+
+
+```
+
+```{r gaussian model}
+#| eval = FALSE
+
+# the unit of parameters
+# output_concentrations: ppb
+# emission rate Q: g/second
+# sigma_y: the horizontal dispersion parameter with a unit of [m]
+# sigma_z: the vertical dispersion parameter with a unit of [m]
+# h: the effective height of source with a unit of [m]
+# y: the distance following crosswind direction with a unit of [m]
+# perpendicular wind speed_u: m/s
+# M: molar weight with a unit of g/mol
+# in this equation, the water vapor pressure is not taken into account
+
+gaussian_model_c <- function(Q, sigma_y, sigma_z, h, u, y, M){
+  return(
+    Q/(2*pi*sigma_y*sigma_z*u)*exp(-0.5*(y/sigma_y)^2)*(exp(-0.5*((h-3)/sigma_z)^2) + exp(-0.5*((h+3)/sigma_z)^2))/M*8.314*298.15/101325/(10^(-9))
+  )
+}
+
+y <- seq(-100, 100, 1)
+gaussian_model_c(10000,2,2,3,3.5,y)
+set.seed(555)
+measure_c <- dnorm(y, mean=0, sd=30)
+
+data <- data.frame(
+  measure_c,
+  Q = seq(10, 1000, length.out = 201),
+  sigma_y = seq(2, 10, length.out = 201),
+  sigma_z = seq(2, 10, length.out = 201),
+  h = seq(1, 10, length.out = 201)
+)
+
+
+# use A COST function to optimize the parameters
+cost_function <- function(params, u, y, M, measure_c) {
+  Q <- params[1]
+  sigma_y <- params[2]
+  sigma_z <- params[3]
+  h <- params[4]
+  
+  model_c <- Q/(2*pi*sigma_y*sigma_z*u)*exp(-0.5*(y/sigma_y)^2)*(exp(-0.5*((h-3)/sigma_z)^2) + exp(-0.5*((h+3)/sigma_z)^2))/M*8.314*298.15/101325/(10^(-9))
+  
+  if(option==1){
+    return(
+    -cor(measure_c, model_c)
+    )
+  } else if (option==2) {
+    return(rmse(measure_c, model_c))
+  } else {
+    return(
+    sum((measure_c-model_c)^2)
+    )
+  }
+  
+}
+
+result <- optim(par = c(Q = 10, sigma_y = 2, sigma_z = 2, h = 1), u = 3.5, y = y, M = 44, measure_c = measure_c, fn = cost_function, method = "L-BFGS-B")
+
+result$par
+result$value
+result$convergence
+result$message
+result$counts
+
+# 
+```
+
+Check the range of parameters.
+The results are different if using different cost functions or different optimization methods.
+
+
+\newpage
+# **correlation between gases for plumes**
+```{r tunnel}
+
+pdf(paste0("D:/1 PhD Studies/3.1 Results of projects/2022_Rotterdam_Campaign/Tunnel/tunnel_plume.pdf"))
+summary <- NULL
+
+for(i in c(2,5,8,10,11,17)) {
+  
+  unique_date <- seq(from = as.Date("2022-08-22", format = "%Y-%m-%d"), to = as.Date("2022-09-07"), by = '1 day')
+  
+  data <- read.csv(paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne&meteo_", unique_date[i], ".csv"))
+  data$date <- as.POSIXct(data$date, tz = "UTC")
+  reference_timestamp <- as.POSIXct(paste0(unique_date[i], " 00:00:00"), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+  # Calculate the difference in seconds between the timestamp and reference timestamp
+  data <- cbind(
+    data, time = as.numeric(difftime(data$date, reference_timestamp, units = "secs"))
+  )
+
+if(unique_date[i]=="2022-08-23") {
+  condition <- data.frame(
+    min = c(9*3600+55*60, 10*3600+13*60+55, 11*3600+49*60+15, 11*3600+54*60+50),
+    max = c(9*3600+58*60, 10*3600+14*60+20, 11*3600+50*60+45, 11*3600+55*60+50)
+  )
+}
+
+if(unique_date[i]=="2022-08-26") {
+  
+  condition <- data.frame(
+    min = c(9*3600+41*60, 10*3600+33*60, 10*3600+40*60, 10*3600+45*60),
+    max = c(9*3600+42*60, 10*3600+34*60, 10*3600+41*60, 10*3600+47*60)
+  )
+}  
+  
+if(unique_date[i]=="2022-08-29") {
+  
+  condition <- data.frame(
+    min = c(7*3600+51*60+50, 12*3600),
+    max = c(7*3600+52*60+50, 12*3600+1*60)
+  )
+}  
+
+if(unique_date[i]=="2022-08-31") {
+  
+  condition <- data.frame(
+    min = c(8*3600+26*60+30, 12*3600+7*60+30, 12*3600+14*60),
+    max = c(8*3600+27*60, 12*3600+8*60+30, 12*3600+16*60)
+  )
+}  
+  
+if(unique_date[i]=="2022-09-01") {
+  
+  condition <- data.frame(
+    min = c(9*3600, 13*3600+37*60+15, 13*3600+44*60+40),
+    max = c(9*3600+45, 13*3600+39*60, 13*3600+45*60+40)
+  )
+}  
+  
+if(unique_date[i]=="2022-09-07") {
+  
+  condition <- data.frame(
+    min = c(12*3600+35*60+15, 12*3600+41*60, 13*3600+41*60),
+    max = c(12*3600+37*60, 12*3600+42*60, 13*3600+42*60+30)
+  )
+}  
+  
+#################################################################################################
+  #save the extracted data
+  # subset.df <- apply(condition, 1, function(row) {
+  #    subset(data, time>row["min"] & time<row["max"])
+  #  })
+  # for(k in 1:length(subset.df)){
+  #   # Extract the timestamp and comment from the data frame
+  #   timestamp <- min(subset.df[[k]]$datetime, na.rm = TRUE)
+  #   comment <- unique(subset.df[[k]]$comment)
+  #   tunnel.name <- comment[which.max(nchar(comment))]
+  # 
+  #   # Format timestamp to remove invalid characters
+  #   timestamp_formatted <- gsub("[: ]", "_", timestamp)
+  # 
+  #   write.csv(subset.df[[k]], paste0("c:/Users/Xin09/", timestamp_formatted, ".csv"))
+  # }
+#################################################################################################
+
+  for(j in 1:nrow(condition)) {
+
+    df <- data[data$time > condition$min[j] & data$time < condition$max[j], ]
+    df$date <- as.POSIXct(df$date, tz = "UTC")
+    
+    plot <- plot_ly(df, x = ~lon, y = ~lat, color = ~X10_CH4, type = 'scatter', mode = 'markers',
+                text = paste("<br>Longitude:",round(df$lon, 5), '[&deg;]',
+                             "<br>Latitude:",round(df$lat,5), '[&deg;]',
+                             "<br>N2O:", as.character(round(df$X10_CH4, 2)), '[ppb]',
+                             '<br>UTC_Time:', as.character(df$date))
+)
+   saveWidget(plot, file = paste0("C:/Users/Xin09/", unique_date[i], "_", j, "_transect.html"))
+
+    comment <- unique(df$comment)
+    tunnel.name <- comment[which.max(nchar(comment))]
+
+  p.N2O <- ggplot(df, aes(x = date, y = X14_N2O))+geom_point()+
+    scale_x_datetime(labels = scales::date_format("%H:%M"))
+  p.CH4 <- ggplot(df, aes(x = date, y = X10_CH4))+geom_point()+
+    scale_x_datetime(labels = scales::date_format("%H:%M"))
+  p.CO2 <- ggplot(df, aes(x = date, y = X12_CO2))+geom_point()+
+    scale_x_datetime(labels = scales::date_format("%H:%M"))
+  p.CO <- ggplot(df, aes(x = date, y = X13_CO))+geom_point()+
+    scale_x_datetime(labels = scales::date_format("%H:%M"))
+
+  p <- grid.arrange(
+    p.N2O, p.CH4, p.CO2, p.CO, nrow = 4,
+    top = textGrob(paste0(min(df$datetime, na.rm=TRUE), tunnel.name), vjust = 1, gp = gpar(fontface = "bold", cex = 1.5))
+    )
+  print(p)
+
+
+    model <- lm(X14_N2O~X10_CH4, df); r2_n2o_ch4 <- summary(model)$r.squared; slope_n2o_ch4 <- summary(model)$coefficients[2,1]
+    #ggplot()+geom_point(df, mapping = aes(x = X10_CH4, y =X14_N2O))
+
+    model <- lm(X14_N2O~X12_CO2, df); r2_n2o_co2 <- summary(model)$r.squared; slope_n2o_co2 <- summary(model)$coefficients[2,1]
+    #ggplot()+geom_point(df, mapping = aes(x = X12_CO2, y =X14_N2O))
+
+    model <- lm(X14_N2O~X13_CO, df); r2_n2o_co <- summary(model)$r.squared; slope_n2o_co <- summary(model)$coefficients[2,1]
+    #ggplot()+geom_point(df, mapping = aes(x = X13_CO, y =X14_N2O))
+
+    model <- lm(X10_CH4~X12_CO2, df); r2_ch4_co2 <- summary(model)$r.squared; slope_ch4_co2 <- summary(model)$coefficients[2,1]
+    #ggplot()+geom_point(df, mapping = aes(x = X12_CO2, y =X10_CH4))
+
+    model <- lm(X10_CH4~X13_CO, df); r2_ch4_co <- summary(model)$r.squared; slope_ch4_co <- summary(model)$coefficients[2,1]
+    #ggplot()+geom_point(df, mapping = aes(x = X13_CO, y =X10_CH4))
+
+    model <- lm(X12_CO2~X13_CO, df); r2_co2_co <- summary(model)$r.squared; slope_co2_co <- summary(model)$coefficients[2,1]
+    #ggplot()+geom_point(df, mapping = aes(x = X13_CO, y =X12_CO2))
+
+    summary <- rbind(
+      summary,
+      data.frame(
+        min = min(df$datetime, na.rm=TRUE), max = max(df$datetime, na.rm=TRUE),
+        tunnel = tunnel.name,
+        r2_N2O_CH4=r2_n2o_ch4, slope_N2O_CH4=slope_n2o_ch4,
+        r2_N2O_CO2=r2_n2o_co2, slope_N2O_CO2=slope_n2o_co2,
+        r2_N2O_CO=r2_n2o_co, slope_N2O_CO=slope_n2o_co,
+        r2_CH4_CO2=r2_ch4_co2, slope_CH4_CO2=slope_ch4_co2,
+        r2_CH4_CO=r2_ch4_co, slope_CH4_CO=slope_ch4_co,
+        r2_CO2_CO=r2_co2_co, slope_CO2_CO=slope_co2_co
+        )
+    )
+
+   }
+  
+}  
+
+  write.csv(summary, paste0("D:/1 PhD Studies/3.1 Results of projects/2022_Rotterdam_Campaign/Tunnel/tunnel_summary.1.csv"))
+  while (!is.null(dev.list()))  dev.off()
+ 
+```
+
+```{r enhancement ratio for WWTP Kralingseveer}
+
+  pdf(paste0("D:/1 PhD Studies/3.1 Results of projects/2022_Rotterdam_Campaign/WWTP/Kralingseveer.pdf"))
+  summary <- NULL
+
+for(i in c(3,5,8,16)){
+  
+  unique_date <- seq(from = as.Date("2022-08-22", format = "%Y-%m-%d"), to = as.Date("2022-09-07"), by = '1 day')
+  
+  data <- read.csv(paste0("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/aerodyne&meteo_", unique_date[i], ".csv"))
+  data$date <- as.POSIXct(data$date, tz = "UTC")
+  reference_timestamp <- as.POSIXct(paste0(unique_date[i], " 00:00:00"), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+  # Calculate the difference in seconds between the timestamp and reference timestamp
+  data <- cbind(
+    data, time = as.numeric(difftime(data$date, reference_timestamp, units = "secs"))
+  )
+
+  if(unique_date[i]==as.Date("2022-08-24", tz = UTC)){
+    condition <- data.frame(
+      min = c(10*3600+33*60+50, 12*3600+36*60+38),
+      max = c(10*3600+34*60+32, 12*3600+37*60+30)
+    )
+    }
+  if(unique_date[i]==as.Date("2022-08-26", tz = UTC)){
+    condition <- data.frame(
+      min = c(9*3600+13*60+30, 12*3600+38*60+30, 12*3600+41*60+30, 13*3600+11*60, 13*3600+25*60),
+      max = c(9*3600+14*60+30, 12*3600+39*60+30, 12*3600+42*60+30, 13*3600+12*60+30, 13*3600+26*60+30)
+      )
+      }
+  if(unique_date[i]==as.Date("2022-08-29", tz = UTC)){
+    condition <- data.frame(
+      min = c(9*3600+21*60, 9*3600+26*60, 13*3600+37*60+30),
+      max = c(9*3600+21*60+50, 9*3600+27*60+30, 13*3600+38*60)
+    )
+    }
+  if(unique_date[i]==as.Date("2022-09-06", tz = UTC)){
+    condition <- data.frame(
+      min = c(6*3600+29*60+40),
+      max = c(6*3600+32*60+23)
+    )
+    }
+
+  #################################################################################################
+  # save the extracted data
+  # subset.df <- apply(condition, 1, function(row) {
+  #    subset(data, time>row["min"] & time<row["max"])
+  #  })
+  # for(k in 1:length(subset.df)){
+  #   # Extract the timestamp and comment from the data frame
+  #   timestamp <- min(subset.df[[k]]$datetime, na.rm = TRUE)
+      # comment <- unique(subset.df[[k]]$comment)
+      # tunnel.name <- comment[which.max(nchar(comment))]
+  #   
+  #   # Format timestamp to remove invalid characters
+  #   timestamp_formatted <- gsub("[: ]", "_", timestamp)
+  #   
+  #   write.csv(subset.df[[k]], paste0("c:/Users/Xin09/", timestamp_formatted, ".csv"))
+  # }
+  #################################################################################################
+  
+  for(j in 1:nrow(condition)) {
+    
+    df <- data[data$time > condition$min[j] & data$time < condition$max[j], ]
+    df$date <- as.POSIXct(df$date, tz = "UTC")
+    comment <- unique(df$comment)
+
+  p.N2O <- ggplot(df, aes(x = date, y = X14_N2O))+geom_point()+
+    scale_x_datetime(labels = scales::date_format("%H:%M"))  
+  p.CH4 <- ggplot(df, aes(x = date, y = X10_CH4))+geom_point()+
+    scale_x_datetime(labels = scales::date_format("%H:%M"))
+  p.CO2 <- ggplot(df, aes(x = date, y = X12_CO2))+geom_point()+
+    scale_x_datetime(labels = scales::date_format("%H:%M"))
+  p.CO <- ggplot(df, aes(x = date, y = X13_CO))+geom_point()+
+    scale_x_datetime(labels = scales::date_format("%H:%M"))
+  
+  p <- grid.arrange(
+    p.N2O, p.CH4, p.CO2, p.CO, nrow = 4, 
+    top = textGrob(paste0(min(df$datetime, na.rm=TRUE), "Kralingsevee"), vjust = 1, gp = gpar(fontface = "bold", cex = 1.5))
+    )
+  print(p)
+  
+
+  
+    model <- lm(X14_N2O~X10_CH4, df); r2_n2o_ch4 <- summary(model)$r.squared; slope_n2o_ch4 <- summary(model)$coefficients[2,1]
+    ggplot()+geom_point(df, mapping = aes(x = X10_CH4, y =X14_N2O))
+
+    model <- lm(X14_N2O~X12_CO2, df); r2_n2o_co2 <- summary(model)$r.squared; slope_n2o_co2 <- summary(model)$coefficients[2,1]
+    ggplot()+geom_point(df, mapping = aes(x = X12_CO2, y =X14_N2O))
+  
+    model <- lm(X14_N2O~X13_CO, df); r2_n2o_co <- summary(model)$r.squared; slope_n2o_co <- summary(model)$coefficients[2,1]
+    ggplot()+geom_point(df, mapping = aes(x = X13_CO, y =X14_N2O))
+
+    model <- lm(X10_CH4~X12_CO2, df); r2_ch4_co2 <- summary(model)$r.squared; slope_ch4_co2 <- summary(model)$coefficients[2,1]
+    ggplot()+geom_point(df, mapping = aes(x = X12_CO2, y =X10_CH4))
+  
+    model <- lm(X10_CH4~X13_CO, df); r2_ch4_co <- summary(model)$r.squared; slope_ch4_co <- summary(model)$coefficients[2,1]
+    ggplot()+geom_point(df, mapping = aes(x = X13_CO, y =X10_CH4))
+    
+    model <- lm(X12_CO2~X13_CO, df); r2_co2_co <- summary(model)$r.squared; slope_co2_co <- summary(model)$coefficients[2,1]
+    ggplot()+geom_point(df, mapping = aes(x = X13_CO, y =X12_CO2))
+
+    summary <- rbind(
+      summary, 
+      data.frame(
+        min = min(df$datetime, na.rm=TRUE), max = max(df$datetime, na.rm=TRUE), 
+        WWTP = "Kralingsevee",
+        r2_N2O_CH4=r2_n2o_ch4, slope_N2O_CH4=slope_n2o_ch4,
+        r2_N2O_CO2=r2_n2o_co2, slope_N2O_CO2=slope_n2o_co2,
+        r2_N2O_CO=r2_n2o_co, slope_N2O_CO=slope_n2o_co,
+        r2_CH4_CO2=r2_ch4_co2, slope_CH4_CO2=slope_ch4_co2, 
+        r2_CH4_CO=r2_ch4_co, slope_CH4_CO=slope_ch4_co,
+        r2_CO2_CO=r2_co2_co, slope_CO2_CO=slope_co2_co
+        )
+    )
+    
+  }
+
+}  
+  
+  write.csv(summary, paste0("D:/1 PhD Studies/3.1 Results of projects/2022_Rotterdam_Campaign/WWTP/Kralingsevee_summary.csv"))
+  while (!is.null(dev.list()))  dev.off()
+
+  
+   
+```
+
+
+\newpage
+# **Plots for presentations**
+```{R upscale the emissions from 3 or 4 WWTPs to nine WWTPs}
+
+df <- readxl::read_xlsx("D:/1 PhD Studies/3.1 Results of projects/2022_Rotterdam_Campaign/WWTP_emission.xlsx", sheet = 2)
+df <- as.data.frame(df)
+
+df[, 3] <- as.numeric(df[, 3]);
+df[, 4] <- as.numeric(df[, 4]);
+df[, 5] <- as.numeric(df[, 5]);
+df[, 6] <- as.numeric(df[, 6])
+
+model.df <- data.frame(
+  n2o.emi.igm = df[1:4, "emission_N2O"],
+  n2o.emi.ivt = df[5:8, "emission_N2O"],
+  ch4.emi.igm = df[1:4, "emission_CH4"],
+  ch4.emi.ivt = df[5:8, "emission_CH4"]
+)
+
+data <- read.csv("D:/1 PhD Studies/1 Data/Inventory/Dutch_inventory/N2O_CH4_CO2_CO_emission_Rotterdam_area_company_2020_2021_2022.csv")
+data <- mutate(data, emission = Emissie/366/24) # convert unit from kg/yr to kg/hr
+
+# select data by conditions for n2o
+condition <- data$Stof=="Distikstofoxide" & 
+  data$Jaar=="2020" & 
+  (data$Sector=="Sewerage and wastewater treatment plants")
+data.n2o <- group_by(data[condition, ], Bedrijf, lon, lat) %>% 
+  summarise(emission = sum(emission))
+data.n2o <- as.data.frame(data.n2o)
+
+# select data by conditions for ch4
+condition <- data$Stof=="Methaan" & 
+  data$Jaar=="2020" & 
+  (data$Sector=="Sewerage and wastewater treatment plants")
+data.ch4 <- group_by(data[condition, ], Bedrijf, lon, lat) %>% 
+  summarise(emission = sum(emission))
+data.ch4 <- as.data.frame(data.ch4)
+
+
+# Function to fit multiple models and compare them
+fit_multiple_models <- function(data, x_col, y_col) {
+  # Create formula strings
+  linear_formula <- as.formula(paste(y_col, "~", x_col))
+  quad_formula <- as.formula(paste(y_col, "~", "poly(", x_col, ", 2, raw=TRUE)"))
+  cubic_formula <- as.formula(paste(y_col, "~", "poly(", x_col, ", 3, raw=TRUE)"))
+  
+  # Fit different models
+  models <- list(
+    # Linear model
+    linear = lm(linear_formula, data = data),
+    
+    # Polynomial models
+    quadratic = lm(quad_formula, data = data),
+    cubic = lm(cubic_formula, data = data),
+    
+    # Exponential model (log-transform y)
+    exponential = lm(log(get(y_col)) ~ get(x_col), data = data),
+    
+    # Logarithmic model
+    logarithmic = lm(paste(y_col, "~ log(", x_col, ")"), data = data)
+  )
+  
+  # Calculate metrics for each model
+  metrics <- data.frame(
+    Model = names(models),
+    R_squared = sapply(models, function(m) summary(m)$r.squared),
+    Adj_R_squared = sapply(models, function(m) summary(m)$adj.r.squared),
+    AIC = sapply(models, AIC),
+    BIC = sapply(models, BIC)
+  )
+  
+  # Sort models by R-squared
+  metrics <- metrics[order(-metrics$R_squared), ]
+  
+  return(list(models = models, metrics = metrics))
+}
+
+results.n2o <- fit_multiple_models(model.df, "n2o.emi.ivt", "n2o.emi.igm")
+results.ch4 <- fit_multiple_models(model.df, "ch4.emi.ivt", "ch4.emi.igm")
+
+
+# Function to plot all model fits
+plot_model_fits <- function(data, pred_data, x_col, y_col, models) {
+   pred_data <- data.frame(
+    emi = pred_data$emission
+  )
+   names(pred_data) <- x_col
+   
+  # Generate predictions for each model
+  predictions <- list()
+  
+  # Calculate statistics for each model
+  stats <- list()
+  
+  # Linear model stats
+  predictions$linear <- predict(models$linear, newdata = pred_data)
+  linear_summary <- summary(models$linear)
+  stats$linear <- sprintf("Linear: R² = %.3f, p = %.3e",
+                         linear_summary$r.squared,
+                         linear_summary$coefficients[2,4])
+  
+  # Polynomial predictions and stats
+  predictions$quadratic <- predict(models$quadratic, newdata = pred_data)
+  quad_summary <- summary(models$quadratic)
+  stats$quadratic <- sprintf("Quadratic: R² = %.3f, p = %.3e",
+                           quad_summary$r.squared,
+                           quad_summary$coefficients[2,4])
+  
+  predictions$cubic <- predict(models$cubic, newdata = pred_data)
+  cubic_summary <- summary(models$cubic)
+  stats$cubic <- sprintf("Cubic: R² = %.3f, p = %.3e",
+                        cubic_summary$r.squared,
+                        cubic_summary$coefficients[2,4])
+  
+  # Exponential prediction and stats
+  predictions$exponential <- exp(predict(models$exponential, newdata = pred_data))
+  exp_summary <- summary(models$exponential)
+  stats$exponential <- sprintf("Exponential: R² = %.3f, p = %.3e",
+                             exp_summary$r.squared,
+                             exp_summary$coefficients[2,4])
+  
+  # Logarithmic prediction and stats
+  predictions$logarithmic <- predict(models$logarithmic, newdata = pred_data)
+  log_summary <- summary(models$logarithmic)
+  stats$logarithmic <- sprintf("Logarithmic: R² = %.3f, p = %.3e",
+                              log_summary$r.squared,
+                              log_summary$coefficients[2,4])
+  
+  # Sort predictions for smooth lines
+  pred_order <- order(pred_data[[x_col]])
+  sorted_x <- pred_data[[x_col]][pred_order]
+  
+  # Create plot
+  p <- ggplot(data, aes_string(x = x_col, y = y_col)) +
+    # Add original data points
+    geom_point(size = 5) +
+    
+    # Add smoothed model lines
+    geom_smooth(method = "lm", formula = y ~ x, 
+               color = "blue", se = FALSE, linetype = "dashed", size = 0.5) +
+    geom_line(data = data.frame(x = sorted_x, y = predictions$linear[pred_order]),
+              aes(x = x, y = y, color = "Linear"), size = 1) +
+    
+    geom_smooth(method = "lm", formula = y ~ poly(x, 2), 
+               color = "red", se = FALSE, linetype = "dashed", size = 0.5) +
+    geom_line(data = data.frame(x = sorted_x, y = predictions$quadratic[pred_order]),
+              aes(x = x, y = y, color = "Quadratic"), size = 1) +
+    
+    geom_smooth(method = "lm", formula = y ~ poly(x, 3), 
+               color = "green", se = FALSE, linetype = "dashed", size = 0.5) +
+    geom_line(data = data.frame(x = sorted_x, y = predictions$cubic[pred_order]),
+              aes(x = x, y = y, color = "Cubic"), size = 1) +
+    
+    geom_line(data = data.frame(x = sorted_x, y = predictions$exponential[pred_order]),
+              aes(x = x, y = y, color = "Exponential"), size = 1) +
+    
+    geom_line(data = data.frame(x = sorted_x, y = predictions$logarithmic[pred_order]),
+              aes(x = x, y = y, color = "Logarithmic"), size = 1) +
+    
+    # Add model statistics as annotations
+    annotate("text", x = -Inf, y = Inf, hjust = -0.1, vjust = 2,
+             label = stats$linear, color = "blue") +
+    annotate("text", x = -Inf, y = Inf, hjust = -0.1, vjust = 3,
+             label = stats$quadratic, color = "red") +
+    annotate("text", x = -Inf, y = Inf, hjust = -0.1, vjust = 4,
+             label = stats$cubic, color = "green") +
+    annotate("text", x = -Inf, y = Inf, hjust = -0.1, vjust = 5,
+             label = stats$exponential, color = "purple") +
+    annotate("text", x = -Inf, y = Inf, hjust = -0.1, vjust = 6,
+             label = stats$logarithmic, color = "orange") +
+    
+    scale_color_manual(values = c("Linear" = "blue",
+                                 "Quadratic" = "red",
+                                 "Cubic" = "green",
+                                 "Exponential" = "purple",
+                                 "Logarithmic" = "orange")) +
+    theme_minimal() +
+    labs(title = "Comparison of Different Model Fits",
+         subtitle = "Dashed lines show smoothed fits",
+         color = "Model Type") +
+    theme(legend.position = "bottom",
+          plot.title = element_text(hjust = 0.5),
+          plot.subtitle = element_text(hjust = 0.5))
+  
+  return(p)
+}
+
+plot_model_fits(model.df, data.n2o, "n2o.emi.ivt", "n2o.emi.igm", results.n2o$models)
+plot_model_fits(model.df, data.ch4, "ch4.emi.ivt", "ch4.emi.igm", results.ch4$models)
+
+```
+
+
+```{r plot}
+# P.N2O <- ggplot()+
+#   # plot bar for dutch inventory
+#   geom_bar(df, mapping = aes(x = WWTP, group = flag, fill = flag, y = emission_N2O), stat = 'identity', position = position_dodge2(), alpha = 0.8, width = 0.8)+
+#   scale_fill_viridis(discrete = TRUE)+
+# 
+#   geom_errorbar(df, 
+#                 mapping = aes(x = WWTP, group = flag, colour = flag, ymax = emission_N2O + emission_N2O_uncertainty, ymin = emission_N2O - emission_N2O_uncertainty),
+#                 position = position_dodge2(),
+#                 show.legend=FALSE, width = 0.8)+
+#   scale_colour_viridis(discrete = TRUE)+
+# 
+#   labs(fill = '')+
+#   theme_bw()+
+#   theme(
+#     axis.title.x = element_blank(), axis.text.x = element_text(),            
+#     legend.position = c(0.75, 0.75),
+#     legend.text = element_text(),
+#     legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+#     legend.background = element_rect(fill = "transparent", colour = NA),
+#     legend.key = element_rect(fill = NA, colour = NA))+
+#   ylab( bquote(''*N[2]*O*' emission ['*kg~h^-1*']') )
+# 
+# P.CH4 <- ggplot()+
+#   # plot bar for dutch inventory
+#   geom_bar(df, mapping = aes(x = WWTP, group = flag, fill = flag, y = emission_CH4), stat = 'identity', position = position_dodge2(), alpha = 0.8, width = 0.8)+
+#   scale_fill_viridis(discrete = TRUE)+
+# 
+#   geom_errorbar(df, 
+#                 mapping = aes(x = WWTP, group = flag, colour = flag, ymax = emission_CH4 + emission_CH4_uncertainty, ymin = emission_CH4 - emission_CH4_uncertainty),
+#                 position = position_dodge2(),
+#                 show.legend=FALSE, width = 0.8)+
+#   scale_colour_viridis(discrete = TRUE)+
+# 
+#   labs(fill = '')+
+#   theme_bw()+
+#   theme(
+#     axis.title.x = element_blank(), axis.text.x = element_text(),            
+#     legend.position = c(0.75, 0.75),
+#     legend.text = element_text(),
+#     legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+#     legend.background = element_rect(fill = "transparent", colour = NA),
+#     legend.key = element_rect(fill = NA, colour = NA))+
+#   ylab( bquote(''*CH[4]*' emission ['*kg~h^-1*']') )
+# 
+# tiff("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/wwtp.emi.1.tiff", units="mm", width=200, height=75, res=300)
+# grid.arrange(P.N2O, P.CH4, ncol=2)
+# while (!is.null(dev.list()))  dev.off()
+
+df <- df[df$flag=="IGM",]
+melt.emi <- melt(df, id.vars = "WWTP", measure.vars = c("emission_N2O", "emission_CH4"), value.name = "emi");
+melt.sd <- melt(df, id.vars = "WWTP", measure.vars = c("emission_N2O_uncertainty", "emission_CH4_uncertainty"), value.name = "uncertainty")
+melt <- cbind(melt.emi, melt.sd["uncertainty"])
+
+p <- ggplot()+
+  # plot bar for dutch inventory
+  geom_bar(melt, mapping = aes(x = WWTP, group = variable, fill = variable, y = emi), stat = 'identity', position = position_dodge2(), alpha = 0.8, width = 0.8)+
+  scale_fill_viridis(discrete = TRUE)+
+
+  geom_errorbar(melt,
+                mapping = aes(x = WWTP, group = variable, colour = variable, ymax = emi + uncertainty, ymin = emi - uncertainty),
+                position = position_dodge2(),
+                show.legend=FALSE, width = 0.8)+
+  scale_colour_viridis(discrete = TRUE)+
+
+  labs(fill = '')+
+  theme_bw()+
+  theme(
+    axis.title.x = element_text(), axis.text.x = element_text(),
+    legend.position = c(0.75, 0.75),
+    legend.text = element_text(),
+    legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+    legend.background = element_rect(fill = "transparent", colour = NA),
+    legend.key = element_rect(fill = NA, colour = NA))+
+  ylab( bquote('Gaussian estimates ['*kg~h^-1*']') )
+
+tiff("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/wwtp.emi.2.tiff", units="mm", width=150, height=75, res=300)
+print(p)
+while (!is.null(dev.list()))  dev.off()
+
+
+
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~ correlation between gaussian estimates and inventories~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+igm <- df[df$flag=="IGM",]; names(igm)[names(igm)=="emission_CH4"] <- "IGM"
+inventory <- df[df$flag=="inventory",]; names(inventory)[names(inventory)=="emission_CH4"] <- "inventory"
+  
+data <- data.frame(IGM = igm[,"IGM"], inventory = inventory[,"inventory"]) 
+
+model <- lm(IGM~inventory, data=data)
+slope <- summary(model)$coefficients[2,1]
+intercept <- summary(model)$coefficients[1,1]
+
+WWTP <- read.csv("D:/1 PhD Studies/1 Data/Inventory/Dutch_Inventory/N2O_CH4_CO2_CO_emission_Rotterdam_area_company_2020_2021_2022.csv")
+
+condition <- WWTP$Sector=="Sewerage and wastewater treatment plants" & 
+  #WWTP$Stof=="Distikstofoxide" &
+  WWTP$Stof== "Methaan" &
+  WWTP$Jaar==2021
+WWTP <- subset(WWTP, condition)
+# sum up emissions of each WWTP 
+WWTP <- group_by(WWTP, lon, lat, Sector, Bedrijf) %>% 
+  summarise(emission = sum(Emissie)) %>%
+  mutate(gaussian.estimates = slope*emission+intercept)
+WWTP <- as.data.frame(WWTP)
+
+colSums(WWTP[,c("emission", "gaussian.estimates")])
+
+
+   p <- ggplot(data, mapping=aes(x = inventory, y = IGM))+
+    geom_point()+
+    stat_smooth( method = 'lm', formula = y~x)+
+    stat_regline_equation(mapping = aes( label =  paste(after_stat(eq.label), after_stat(rr.label), sep = "~~~~")), formula = y ~ x, show.legend = FALSE)+
+    theme_bw()+
+    theme(
+      legend.title=element_blank(), legend.position = 'none',
+      legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+      legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+      legend.background = element_rect(fill = "transparent", colour = NA),
+      legend.key = element_rect(fill = NA, colour = NA))+
+    ylab('gaussian estimates [kg/hr]')+xlab('inventory [kg/hr]')
+
+tiff("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/wwtp&emi.tiff", units="mm", width=100, height=75, res=300)
+print(p)
+while (!is.null(dev.list()))  dev.off()
+
+
+```
+
+```{r enhancement ratio for the WWTP }
+
+df <- read.csv("D:/1 PhD Studies/3.1 Results of projects/2022_Rotterdam_Campaign/WWTP/Kralingsevee_summary.csv")
+
+melt <- melt(df, id.vars = "X", measure.vars = c("r2_N2O_CO2", "r2_CH4_CO2", "r2_N2O_CH4"))
+p1 <- ggplot(melt)+
+  geom_boxplot(mapping = aes(x = variable, y = value, fill = variable))+
+  scale_fill_viridis(discrete = TRUE)+labs(fill = "")+
+  theme_bw()+
+  theme(
+  axis.title.x = element_blank(), axis.text.x = element_text(),              
+  legend.position = c(0.35, 0.75),
+  legend.text = element_text(),
+  legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+  legend.background = element_rect(fill = "transparent", colour = NA),
+  legend.key = element_rect(fill = NA, colour = NA))
+
+p2 <- ggplot(melt)+
+  geom_bar(mapping = aes(x = X, y = value, fill = variable), stat = "identity", position = position_dodge2())+
+  scale_fill_viridis(discrete = TRUE)+labs(fill = "")+
+  theme_bw()+
+  theme(
+  axis.title.x = element_blank(), axis.text.x = element_text(),              
+  legend.position = "none",
+  legend.text = element_text(),
+  legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+  legend.background = element_rect(fill = "transparent", colour = NA),
+  legend.key = element_rect(fill = NA, colour = NA))
+
+tiff("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/WWTP_correlation_r2.tiff", units="mm", width=200, height=75, res=300)
+grid.arrange(p1, p2, ncol = 2)
+while (!is.null(dev.list()))  dev.off()
+
+
+
+# convert the unit of ratio to mg/g
+df$slope_N2O_CH4 <- df$slope_N2O_CH4*44*1000/16
+df$slope_N2O_CO2 <- df$slope_N2O_CO2*1000
+df$slope_CH4_CO2 <- df$slope_CH4_CO2*16*1000/44
+
+slope <- NULL
+for(i in c(0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)) {
+
+  mean.n2o.co2 <- mean(df$slope_N2O_CO2[df$r2_N2O_CO2>=i]);
+  mean.ch4.co2 <- mean(df$slope_CH4_CO2[df$r2_CH4_CO2>=i]);
+  mean.n2o.ch4 <- mean(df$slope_N2O_CH4[df$r2_N2O_CH4>=i])
+  
+  sd.n2o.co2 <- sd(df$slope_N2O_CO2[df$r2_N2O_CO2>=i]);
+  sd.ch4.co2 <- sd(df$slope_CH4_CO2[df$r2_CH4_CO2>=i]);
+  sd.n2o.ch4 <- sd(df$slope_N2O_CH4[df$r2_N2O_CH4>=i])
+
+  slope <- rbind(
+    slope,
+    data.frame(
+      r2 = i, 
+      number.n2o.co2 = nrow(df[df$r2_N2O_CO2>=i,]), mean.n2o.co2, sd.n2o.co2, 
+      number.ch4.co2 = nrow(df[df$r2_CH4_CO2>=i,]), mean.ch4.co2, sd.ch4.co2,
+      number.n2o.ch4 = nrow(df[df$r2_N2O_CH4>=i,]), mean.n2o.ch4, sd.n2o.ch4
+
+    )
+  )
+  
+}
+
+write.csv(slope, "D:/1 PhD Studies/3.1 Results of projects/2022_Rotterdam_Campaign/WWTP/slope.csv")
+
+
+```
+
+```{R emissions from Refinery&Energy_emission}
+
+df <- readxl::read_xlsx("D:/1 PhD Studies/3.1 Results of projects/2022_Rotterdam_Campaign/Refinery&Energy_emission.xlsx", sheet = 1)
+df <- as.data.frame(df)
+
+df <- df[df$source!="BP Rotterdam refinery", ]
+
+P.N2O <- ggplot()+
+  # plot bar for dutch inventory
+  geom_bar(df, mapping = aes(x = source, group = flag, fill = flag, y = emission_N2O), stat = 'identity', position = position_dodge2())+
+  labs(fill = '') +
+  scale_fill_viridis_d()+
+
+  theme_bw()+
+  theme(
+    axis.title.x = element_blank(), axis.text.x = element_text(),
+    legend.position = 'right',
+    legend.text = element_text(size =8),
+    legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+    legend.background = element_rect(fill = "transparent", colour = NA),
+    legend.key = element_rect(fill = NA, colour = NA))+
+  ylab( bquote(''*N[2]*O*' emission ['*kg/h*']') )
+
+
+tiff("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/energy.emi.tiff", units="mm", width=150, height=75, res=300)
+print(P.N2O)
+while (!is.null(dev.list()))  dev.off()
+```
+
+```{r point and diffuse sources of inventory}
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~point and diffusive sources of inventory~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# PREPARATION for gridmap: run the script in the rmarkdown file "D:\1 PhD Studies\1 Data\Inventory\The research about the registered emissions in the Dutch website.Rmd"
+
+# n2o.inventory <- data[which(data$Stof=="Distikstofoxide" & data$V1<4.75), ]
+# n2o.inventory <- data[which(data$Stof=="Methaan" & data$V1<4.75), ]
+# 
+# names(n2o.inventory)[names(n2o.inventory)=="V1"] <- "lon";
+# names(n2o.inventory)[names(n2o.inventory)=="V2"] <- "lat"
+# 
+# df <- group_by(n2o.inventory, Sector) %>% summarise(emission = sum(Emissie));
+# df <- as.data.frame(df)
+# df <- cbind(df, flag = "total")
+# write.csv(df, "C:/Users/Xin09/total.2020.old.csv")
+
+# load point sources inventory
+# WWTP <- read.csv("D:/1 PhD Studies/1 Data/Inventory/Dutch_Inventory/N2O_CH4_CO2_CO_emission_Rotterdam_area_company_2020_2021_2022.csv")
+# 
+# condition <- #WWTP$Stof=="Distikstofoxide" &
+#   WWTP$Stof== "Methaan" &
+#   WWTP$Jaar==2020
+# WWTP <- subset(WWTP, condition)
+# 
+# WWTP <- group_by(WWTP, Sector) %>% summarise(emission = sum(Emissie));
+# WWTP <- as.data.frame(WWTP)
+# WWTP$flag <- "Point"
+# write.csv(WWTP, "C:/Users/Xin09/point.2020.csv")
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~plot point and diffuse sources for each sector ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+df.old <- readxl::read_excel("D:/1 PhD Studies/1 Data/Inventory/Dutch_Inventory/CH4_emission_Rotterdam_point_diffuse_sector.xlsx", sheet = 2);
+df.old <- as.data.frame(df.old)
+
+df.new <- readxl::read_excel("D:/1 PhD Studies/1 Data/Inventory/Dutch_Inventory/CH4_emission_Rotterdam_point_diffuse_sector.xlsx", sheet = 3);
+df.new <- as.data.frame(df.new)
+
+library(ggpp)
+P.CH4 <- ggplot()+
+  # plot bar for old dutch inventory
+  geom_bar(df.old, mapping = aes(x=Sector, group=flag, fill=flag, y=emission/366/24), stat = 'identity', width = 0.25, position = position_stacknudge(x = -0.15))+
+  scale_fill_brewer(palette = "Set1") + 
+  labs(fill = 'old inventory in Tong et al., 2023') +
+
+  # plot bar for updated dutch inventory
+  ggnewscale::new_scale_fill() +
+  geom_bar(df.new, mapping = aes(x=Sector, group=flag, fill=flag, y=emission/366/24), stat = 'identity', width = 0.25, position = position_stacknudge(x = 0.15))+
+  scale_fill_viridis(discrete = TRUE) +  labs(fill = 'updated inventory') +
+
+  theme_bw()+
+  theme(
+  axis.title.x = element_blank(), axis.text.x = element_text(angle = 90),              
+  legend.position = c(0.85, 0.8),
+  legend.text = element_text(),
+  legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+  legend.background = element_rect(fill = "transparent", colour = NA),
+  legend.key = element_rect(fill = NA, colour = NA))+
+  ylab( bquote(''*CH[4]*' emission ['*kg~hr^-1*']') )+
+  facet_zoom(ylim = c(0,200))
+
+
+tiff("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/old_new_inventory.CH4.tiff", units="mm", width=300, height=200, res=300)
+print(P.CH4)
+while (!is.null(dev.list()))  dev.off()
+```
+
+```{r tunnel emission}
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~tunnel emission ratio~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+df <- readxl::read_excel("D:/1 PhD Studies/3.1 Results of projects/2022_Rotterdam_Campaign/Tunnel_emission.xlsx", sheet = 2);
+df <- as.data.frame(df)
+
+#df$uncertainty <- as.numeric(df$uncertainty)
+p <- ggplot()+
+  geom_bar(df[df$species=="ugN2O/gCO2",], mapping = aes(x = flag, y = ratio, fill = flag), stat = 'identity', position = position_dodge2())+
+  #geom_errorbar(df, mapping = aes(x = species, ymax = ratio + uncertainty, ymin = ratio - uncertainty, group = flag, colour = flag), show.legend=FALSE, position = position_dodge2())+
+  scale_fill_viridis(discrete = TRUE)+
+  theme_bw()+
+  theme(
+  axis.title.x = element_blank(), axis.text.x = element_text(),              
+  legend.position = c(0.75, 0.75),
+  legend.text = element_text(),
+  legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+  legend.background = element_rect(fill = "transparent", colour = NA),
+  legend.key = element_rect(fill = NA, colour = NA))
+
+tiff("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/tunnel_emission.1.tiff", units="mm", width=150, height=75, res=300)
+print(p)
+while (!is.null(dev.list()))  dev.off()
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~2nd version~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+df <- read.csv("D:/1 PhD Studies/3.1 Results of projects/2022_Rotterdam_Campaign/Tunnel/tunnel_summary.1.csv")
+
+melt <- melt(df, id.vars = "X", measure.vars = c("r2_N2O_CO2", "r2_CH4_CO2"))
+p1 <- ggplot(melt)+
+  geom_boxplot(mapping = aes(x = variable, y = value, fill = variable))+
+  scale_fill_viridis(discrete = TRUE)+labs(fill = "")+
+  theme_bw()+
+  theme(
+  axis.title.x = element_blank(), axis.text.x = element_text(),              
+  legend.position = c(0.75, 0.75),
+  legend.text = element_text(),
+  legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+  legend.background = element_rect(fill = "transparent", colour = NA),
+  legend.key = element_rect(fill = NA, colour = NA))
+
+p2 <- ggplot(melt)+
+  geom_bar(mapping = aes(x = X, y = value, fill = variable), stat = "identity", position = position_dodge2())+
+  scale_fill_viridis(discrete = TRUE)+labs(fill = "")+
+  theme_bw()+
+  theme(
+  axis.title.x = element_blank(), axis.text.x = element_text(),              
+  legend.position = "none",
+  legend.text = element_text(),
+  legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+  legend.background = element_rect(fill = "transparent", colour = NA),
+  legend.key = element_rect(fill = NA, colour = NA))
+
+tiff("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/tunnel_correlation_r2.tiff", units="mm", width=200, height=75, res=300)
+grid.arrange(p1, p2, ncol = 2)
+while (!is.null(dev.list()))  dev.off()
+
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~different criterion for r2~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# change the unit to ug/g
+df$slope_N2O_CO2 <- df$slope_N2O_CO2*1000000
+df$slope_CH4_CO2 <- df$slope_CH4_CO2*16*1000000/44
+
+slope <- NULL
+for(i in c(0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)) {
+  df.n2o <- df[df$r2_N2O_CO2>=i, ];
+  df.ch4 <- df[df$r2_CH4_CO2>=i, ]
+  
+  mean.n2o.co2 <- mean(df.n2o$slope_N2O_CO2);
+  mean.ch4.co2 <- mean(df.ch4$slope_CH4_CO2)
+  
+  median.n2o.co2 <- median(df.n2o$slope_N2O_CO2);
+  median.ch4.co2 <- median(df.ch4$slope_CH4_CO2)
+
+  sd.n2o.co2 <- sd(df.n2o$slope_N2O_CO2);
+  sd.ch4.co2 <- sd(df.ch4$slope_CH4_CO2)
+
+  slope <- rbind(
+    slope,
+    data.frame(
+      r2 = i, 
+      n.n2o.co2 = nrow(df.n2o), mean.n2o.co2, sd.n2o.co2, median.n2o.co2,
+      n.ch4.co2 = nrow(df.ch4), mean.ch4.co2, sd.ch4.co2, median.ch4.co2
+    )
+  )
+}
+
+#write.csv(slope, "D:/1 PhD Studies/3.1 Results of projects/2022_Rotterdam_Campaign/Tunnel/slope.csv")
+
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~plot the r2 and slope~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+slope <- read.csv("D:/1 PhD Studies/3.1 Results of projects/2022_Rotterdam_Campaign/Tunnel/slope.csv")
+
+p.n2o <- ggplot(slope, mapping = aes(x = r2))+
+  geom_line(mapping = aes(y = mean.n2o.co2, group =1), colour = "purple4")+
+  geom_errorbar(mapping = aes(ymax = mean.n2o.co2 + sd.n2o.co2, ymin = mean.n2o.co2 - sd.n2o.co2), colour = "purple4")+
+  ylab("Mean ratios of ugN2O and gCO2")+
+
+  geom_bar(mapping = aes(y = n.n2o.co2*8), fill = "gold", stat = "identity", alpha = 0.6)+
+  scale_y_continuous(sec.axis = sec_axis(~./8, name = "number of plumes"))+
+  xlab("R-squared value")+
+  theme_bw()+
+  theme(
+  axis.title.x = element_text(), axis.text.x = element_text(),  
+  axis.title.y = element_text(colour = "purple4"), 
+  axis.text.y = element_text(colour = "purple4"), 
+
+  axis.title.y.right = element_text(colour = "gold"), 
+  axis.text.y.right = element_text(colour = "gold"), 
+  legend.position = "none",
+  legend.text = element_text(),
+  legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+  legend.background = element_rect(fill = "transparent", colour = NA),
+  legend.key = element_rect(fill = NA, colour = NA))
+
+
+p.ch4 <- ggplot(slope, mapping = aes(x = r2))+
+  geom_line(mapping = aes(y = mean.ch4.co2, group =1), colour = "purple4")+
+  geom_errorbar(mapping = aes(ymax = mean.ch4.co2 + sd.ch4.co2, ymin = mean.ch4.co2 - sd.ch4.co2), colour = "purple4")+
+  ylab("Mean ratios of ugCH4 and gCO2")+
+
+  geom_bar(mapping = aes(y = n.ch4.co2*50), fill = "gold", stat = "identity", alpha = 0.6)+
+  scale_y_continuous(sec.axis = sec_axis(~./50, name = "number of plumes"))+
+  xlab("R-squared value")+
+  theme_bw()+
+  theme(
+  axis.title.x = element_text(), axis.text.x = element_text(),  
+  axis.title.y = element_text(colour = "purple4"), 
+  axis.text.y = element_text(colour = "purple4"), 
+
+  axis.title.y.right = element_text(colour = "gold"), 
+  axis.text.y.right = element_text(colour = "gold"), 
+  legend.position = "none",
+  legend.text = element_text(),
+  legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+  legend.background = element_rect(fill = "transparent", colour = NA),
+  legend.key = element_rect(fill = NA, colour = NA))
+
+tiff("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/tunnel_correlation_slope&r2.tiff", units="mm", width=200, height=75, res=300)
+grid.arrange(p.n2o, p.ch4, ncol = 2)
+while (!is.null(dev.list()))  dev.off()
+
+```
+
+```{r comparison between estimates using MBA & inventory}
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~MBA & old inventory & new inventory~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+if(gas=="N2O") {
+  
+# PREPARATION for gridmap: run the script in the rmarkdown file "D:\1 PhD Studies\1 Data\Inventory\The research about the registered emissions in the Dutch website.Rmd"
+# UNIT OF INVENTORY: kg/yr
+#!!!!!!!!!!!!!!!!!!!!!!!!!!
+data.new <- data
+#!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+n2o.inventory <- data.new[which(data.new$Stof=="Distikstofoxide" & data.new$V1<4.75), ]
+names(n2o.inventory)[names(n2o.inventory)=="V1"] <- "lon";
+names(n2o.inventory)[names(n2o.inventory)=="V2"] <- "lat"
+
+df <- mutate(n2o.inventory, source = case_when(
+  Sector %in% c(
+    "Refineries", "Nature", "Energy", "Other industry", "Trade, Services and Government (HDO).", "Agriculture", "Consumers", "Construction",  "Chemical Industry", "Waste Disposal", "Drinking Water Supply"
+  ) ~ "Others",
+  Sector == "Traffic and Transportation" ~ "Traffic and Transportation",
+  Sector == "Sewerage and wastewater treatment plants" ~ "Sewerage and wastewater treatment plants"
+)) %>% 
+  group_by(source) %>% summarise(emission = sum(Emissie));
+df.new <- as.data.frame(df)
+df.new$flag <- "updated_inventory"
+
+
+# CORRECTED INVENTORY BASED ON OUR STUDIES
+df.correct <- df.new
+delta <- 211198.7 # gaussian estimates derived by the correlation - inventory emissions
+df.correct$emission[df.correct$source=="Sewerage and wastewater treatment plants"] <- df.correct$emission[df.correct$source=="Sewerage and wastewater treatment plants"]+delta
+factor <- 2.89
+df.correct$emission[df.correct$source=="Traffic and Transportation"] <- df.correct$emission[df.correct$source=="Traffic and Transportation"]*factor
+df.correct$flag <- "corrected_inventory"
+
+
+
+# LOAD OLD VERSION OF INVENTORY in the rmarkdown file "D:\1 PhD Studies\1 Data\Inventory\The research about the registered emissions in the Dutch website.Rmd"
+data.old <- data
+n2o.inventory <- data.old[which(data.old$Stof=="Distikstofoxide" & data.old$V1<4.75), ]
+names(n2o.inventory)[names(n2o.inventory)=="V1"] <- "lon";
+names(n2o.inventory)[names(n2o.inventory)=="V2"] <- "lat"
+
+df <- mutate(n2o.inventory, source = case_when(
+  Sector %in% c(
+    "Refineries", "Nature", "Energy", "Other industry", "Trade, Services and Government (HDO).", "Agriculture", "Consumers", "Construction", "Chemical Industry", "Waste Disposal", "Drinking Water Supply"
+  ) ~ "Others",
+  Sector == "Traffic and Transportation" ~ "Traffic and Transportation",
+  Sector == "Sewerage and wastewater treatment plants" ~ "Sewerage and wastewater treatment plants"
+)) %>% 
+  group_by(source) %>% summarise(emission = sum(Emissie));
+df.old <- as.data.frame(df)
+df.old <- cbind(df.old, flag = "old_inventory in Tong et al., 2023")
+
+# LOAD mass balance estimates 
+flux <- readxl::read_excel("D:/1 PhD Studies/3.5 Publications/Manuscript#2_Aircore_N2O_CH4_estimates/emission estimates for 0601&0917&0906_v1.xlsx", sheet=1); flux <- as.data.frame(flux)
+flux <- mutate(flux[flux$flight==906,], flag = "top-down estimates", flag.1 = 'Tong et al., 2023 (without Maasvlakte)')
+
+flux.harbour <- readxl::read_excel("D:/1 PhD Studies/3.1 Results of projects/2022_Rotterdam_Campaign/Harbour_emission.xlsx", sheet=2); flux.harbour <- as.data.frame(flux.harbour)
+
+flux <- rbind(flux[, c("flight", "n2o.emi", "n2o.uncertainty", "flag", "flag.1")], flux.harbour)
+flux$flag.1 <- factor(flux$flag.1, levels = c('Maasvlakte', 'Tong et al., 2023 (without Maasvlakte)'))
+
+
+# put the sector "others' in the bottom of a stacked bar
+df <- rbind(df.old, df.new, df.correct)
+df$source <- factor(
+  df$source, 
+  levels = c("Sewerage and wastewater treatment plants", "Traffic and Transportation", "Others")
+)
+df$flag <- factor(
+  df$flag, 
+  levels = c("old_inventory in Tong et al., 2023", "updated_inventory", "corrected_inventory")
+)
+
+######################################## 1st version #########################################
+p <- ggplot()+
+  # plot bar for old dutch inventory
+  geom_bar(df, mapping = aes(x= flag, group=source, fill=source, y=emission/366/24), stat = 'identity')+
+  scale_fill_viridis(discrete = TRUE)+
+  labs(fill = 'inventory') +
+
+  # plot bar for mass balance flux
+  ggnewscale::new_scale_fill() +
+  geom_bar(flux[flux$flight==906,], mapping = aes(x = flag, y=n2o.emi*44/1000*3600, fill=flag), alpha=0.6, stat = 'identity')+
+  # geom_errorbar(flux, show.legend=FALSE,
+  #               mapping=aes(x=flag, ymax = n2o.emi*44/1000*3600+n2o.uncertainty*44/1000*3600, ymin = n2o.emi*44/1000*3600-n2o.uncertainty*44/1000*3600),
+  #               colour = "skyblue")+
+  scale_fill_manual(name = "Mass balance flux", labels = "", values = "skyblue") +
+  
+  theme_bw()+
+  theme(
+  axis.title.x = element_blank(),              
+  legend.position = c(0.75, 0.7),
+  legend.text = element_text(size =8),
+  legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+  legend.background = element_rect(fill = "transparent", colour = NA),
+  legend.key = element_rect(fill = NA, colour = NA))+
+  ylab( bquote(''*N[2]*O*' emission ['*kg/hr*']') )
+
+tiff("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/MBA&old&updated.4.tiff", units="mm", width=180, height=100, res=300)
+print(p)
+while (!is.null(dev.list()))  dev.off()
+
+
+######################################## 2nd version #########################################
+data <- merge(df, flux, by = 'flag', all = TRUE)
+
+p <- ggplot(data, aes(x = flag))+
+  # plot bar for old dutch inventory
+  geom_bar(mapping = aes(group=source, fill=source, y=emission/366/24), stat = 'identity', width = 0.75)+
+  scale_fill_viridis(discrete = TRUE)+
+  labs(fill = 'Inventory') +
+
+  # plot bar for mass balance flux
+  ggnewscale::new_scale_fill() +
+  geom_bar(mapping = aes(y=n2o.emi*44/1000*3600, fill=flag.1), alpha=0.6, stat = 'identity', width = 0.75)+
+  # geom_errorbar(show.legend=FALSE, width = 0.5,
+  #               mapping=aes(ymax = n2o.emi*44/1000*3600+n2o.uncertainty*44/1000*3600, ymin = n2o.emi*44/1000*3600-n2o.uncertainty*44/1000*3600), 
+  #               colour = "skyblue")+
+  #scale_fill_manual(name = "Mass balance flux", labels = "", values = "skyblue") +
+  scale_fill_brewer(palette = "Set1") + 
+  labs(fill = 'Top-down estimates') +
+
+  theme_bw()+
+  theme(
+  axis.title.x = element_blank(),              
+  legend.position = c(0.25, 0.7),
+  legend.text = element_text(size =8),
+  legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+  legend.background = element_rect(fill = "transparent", colour = NA),
+  legend.key = element_rect(fill = NA, colour = NA))+
+  ylab( bquote(''*N[2]*O*' emission ['*kg~hr^-1*']') )
+
+tiff("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/MBA&old&updated.5.tiff", units="mm", width=180, height=100, res=300)
+print(p)
+while (!is.null(dev.list()))  dev.off()
+
+}
+
+
+if(gas=="CH4") {
+  
+# PREPARATION for gridmap: run the script in the rmarkdown file "D:\1 PhD Studies\1 Data\Inventory\The research about the registered emissions in the Dutch website.Rmd"
+# UNIT OF INVENTORY: kg/yr
+
+CH4.inventory <- data.new[which(data.new$Stof=="Methaan" & data.new$V1<4.75), ]
+names(CH4.inventory)[names(CH4.inventory)=="V1"] <- "lon";
+names(CH4.inventory)[names(CH4.inventory)=="V2"] <- "lat"
+
+df <- mutate(CH4.inventory, source = case_when(
+  Sector %in% c(
+    "Refineries", "Nature", "Energy", "Other industry", "Trade, Services and Government (HDO).", "Agriculture", "Consumers", "Construction",  "Chemical Industry", "Waste Disposal", "Drinking Water Supply"
+  ) ~ "Others",
+  Sector == "Traffic and Transportation" ~ "Traffic and Transportation",
+  Sector == "Sewerage and wastewater treatment plants" ~ "Sewerage and wastewater treatment plants"
+)) %>% 
+  group_by(source) %>% summarise(emission = sum(Emissie));
+df.new <- as.data.frame(df)
+df.new$flag <- "updated_inventory"
+
+
+# CORRECTED INVENTORY BASED ON OUR STUDIES
+df.correct <- df.new
+delta <- 249913.4 # gaussian estimates derived by the correlation MINUS inventory emissions
+df.correct$emission[df.correct$source=="Sewerage and wastewater treatment plants"] <- df.correct$emission[df.correct$source=="Sewerage and wastewater treatment plants"]+delta
+factor <- 5.54
+df.correct$emission[df.correct$source=="Traffic and Transportation"] <- df.correct$emission[df.correct$source=="Traffic and Transportation"]*factor
+df.correct$flag <- "corrected_inventory"
+
+
+
+# LOAD OLD VERSION OF INVENTORY in the rmarkdown file "D:\1 PhD Studies\1 Data\Inventory\The research about the registered emissions in the Dutch website.Rmd"
+CH4.inventory <- data[which(data$Stof=="Methaan" & data$V1<4.75), ]
+names(CH4.inventory)[names(CH4.inventory)=="V1"] <- "lon";
+names(CH4.inventory)[names(CH4.inventory)=="V2"] <- "lat"
+
+df <- mutate(CH4.inventory, source = case_when(
+  Sector %in% c(
+    "Refineries", "Nature", "Energy", "Other industry", "Trade, Services and Government (HDO).", "Agriculture", "Consumers", "Construction", "Chemical Industry", "Waste Disposal", "Drinking Water Supply"
+  ) ~ "Others",
+  Sector == "Traffic and Transportation" ~ "Traffic and Transportation",
+  Sector == "Sewerage and wastewater treatment plants" ~ "Sewerage and wastewater treatment plants"
+)) %>% 
+  group_by(source) %>% summarise(emission = sum(Emissie));
+df.old <- as.data.frame(df)
+df.old <- cbind(df.old, flag = "old_inventory in Tong et al., 2023")
+
+# LOAD mass balance estimates 
+flux <- readxl::read_excel("D:/1 PhD Studies/3.5 Publications/Manuscript#2_Aircore_N2O_CH4_estimates/emission estimates for 0601&0917&0906_v1.xlsx", sheet=1); flux <- as.data.frame(flux)
+flux <- mutate(flux[flux$flight==906,], flag = "top-down estimates", flag.1 = 'Tong et al., 2023 (without Maasvlakte)')
+
+flux.harbour <- readxl::read_excel("D:/1 PhD Studies/3.1 Results of projects/2022_Rotterdam_Campaign/Harbour_emission.xlsx", sheet=3); flux.harbour <- as.data.frame(flux.harbour)
+
+flux <- rbind(flux[, c("flight", "ch4.emi", "ch4.uncertainty", "flag", "flag.1")], flux.harbour)
+flux$flag.1 <- factor(flux$flag.1, levels = c('Maasvlakte', 'Tong et al., 2023 (without Maasvlakte)'))
+
+
+# put the sector "others' in the bottom of a stacked bar
+df <- rbind(df.old, df.new, df.correct)
+df$source <- factor(
+  df$source, 
+  levels = c("Sewerage and wastewater treatment plants", "Traffic and Transportation", "Others")
+)
+df$flag <- factor(
+  df$flag, 
+  levels = c("old_inventory in Tong et al., 2023", "updated_inventory", "corrected_inventory")
+)
+
+
+
+######################################## 2nd version #########################################
+data <- merge(df, flux, by = 'flag', all = TRUE)
+
+p <- ggplot(data, aes(x = flag))+
+  # plot bar for old dutch inventory
+  geom_bar(mapping = aes(group=source, fill=source, y=emission/366/24), stat = 'identity', width = 0.75)+
+  scale_fill_viridis(discrete = TRUE)+
+  labs(fill = 'Inventory') +
+
+  # plot bar for mass balance flux
+  ggnewscale::new_scale_fill() +
+  geom_bar(mapping = aes(y=ch4.emi*16/1000*3600, fill=flag.1), alpha=0.6, stat = 'identity', width = 0.75)+
+  # geom_errorbar(show.legend=FALSE, width = 0.5,
+  #               mapping=aes(ymax = ch4.emi*16/1000*3600+ch4.uncertainty*16/1000*3600, ymin = ch4.emi*16/1000*3600-ch4.uncertainty*16/1000*3600), 
+  #               colour = "skyblue")+
+  #scale_fill_manual(name = "Mass balance flux", labels = "", values = "skyblue") +
+  scale_fill_brewer(palette = "Set1") + 
+  labs(fill = 'Top-down estimates') +
+
+  theme_bw()+
+  theme(
+  axis.title.x = element_blank(),              
+  legend.position = 'none',
+  legend.text = element_text(size =8),
+  legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+  legend.background = element_rect(fill = "transparent", colour = NA),
+  legend.key = element_rect(fill = NA, colour = NA))+
+  ylab( bquote(''*CH[4]*' emission ['*kg/hr*']') )
+
+tiff("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/MBA&old&updated.ch4.tiff", units="mm", width=180, height=100, res=300)
+print(p)
+while (!is.null(dev.list()))  dev.off()
+
+}
+
+```
+
+```{r harbour emissions reported in inventory}
+
+# n2o.inventory <- data[which(data$Stof=="Distikstofoxide" & data$V1<4.2), ]
+# df <- group_by(n2o.inventory, Sector) %>% summarise(emission = sum(Emissie));
+# df <- as.data.frame(df)
+# df <- cbind(df, flag = "total")
+# write.csv(df, "C:/Users/Xin09/total.HARBOUR.2020.csv")
+# 
+# # load point sources inventory
+#   WWTP <- read.csv("D:/1 PhD Studies/1 Data/Inventory/Dutch_Inventory/N2O_CH4_emission_Rotterdam_area_company_2020_2021_2022.csv")
+# 
+# condition <- WWTP$Stof=="Distikstofoxide" & 
+#   WWTP$lon > 3.9 & WWTP$lon < 4.15 & 
+#   WWTP$lat > 51.92 & WWTP$lat < 51.98 &
+#   WWTP$Jaar==2020
+# WWTP <- subset(WWTP, condition)
+# 
+# WWTP <- group_by(WWTP, Sector) %>% summarise(emission = sum(Emissie));
+# WWTP <- as.data.frame(WWTP)
+# WWTP <- cbind(WWTP, flag = "Point")
+# write.csv(WWTP, "C:/Users/Xin09/point.harbour.2020.csv")
+
+df <- read.csv("D:/1 PhD Studies/1 Data/Inventory/Dutch_Inventory/N2O_emission_Harbour_point_diffusive_sector.csv")
+
+p <- ggplot()+
+  # plot bar for old dutch inventory
+  geom_bar(df, mapping = aes(x=Sector, group=flag, fill=flag, y=emission/366/24), stat = 'identity')+
+  scale_fill_brewer(palette = "Set1") + 
+  labs(fill = 'harbour') +
+
+  theme_bw()+
+  theme(
+  axis.title.x = element_blank(), axis.text.x = element_text(angle = 90),         
+  legend.position = c(0.85, 0.8),
+  legend.text = element_text(),
+  legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+  legend.background = element_rect(fill = "transparent", colour = NA),
+  legend.key = element_rect(fill = NA, colour = NA))+
+  ylab( bquote(''*N[2]*O*' emission ['*kg~hr^-1*']') )
+
+tiff("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/harbour_point_diffusive.tiff", units="mm", width=100, height=150, res=100)
+print(p)
+while (!is.null(dev.list()))  dev.off()
+
+
+
+
+# PREPARATION for gridmap: run the script in the rmarkdown file "D:\1 PhD Studies\1 Data\Inventory\The research about the registered emissions in the Dutch website.Rmd"
+
+df <- mutate(n2o.inventory, source = case_when(
+  Sector %in% c(
+    "Sewerage and wastewater treatment plants", "Nature", "Other industry", "Trade, Services and Government (HDO).", "Agriculture", "Consumers", "Construction",  "Chemical Industry", "Waste Disposal", "Drinking Water Supply", "Traffic and Transportation"
+  ) ~ "others",
+  Sector == "Refineries" ~ "Refineries",
+  Sector ==  "Energy" ~ "Energy"
+)) %>% 
+  group_by(source) %>% summarise(emission = sum(Emissie));
+df <- as.data.frame(df)
+df$flag <- "updated_inventory"
+
+p <- ggplot(df, mapping = aes(x = flag, y = emission, fill = source))+geom_bar(stat = 'identity')
+
+tiff("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/harbour_updated_inventory.tiff", units="mm", width=50, height=50, res=100)
+print(p)
+while (!is.null(dev.list()))  dev.off()
+
+
+```
+
+```{r wind comparison}
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~wind from KNMI and Evides~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#load knmi station data
+# the column "FF" indicates the wind speed with a unit of 0.1 m/s 
+knmi_330 <- read.csv("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/Hoek van Holland_330_2021-2030.txt", sep = ",", skip = 31, header = TRUE); head(knmi_330); str(knmi_330)
+knmi_330 <- knmi_330[knmi_330$YYYYMMDD>20220821 & knmi_330$YYYYMMDD<20220908,]
+
+knmi_343 <- read.csv("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/R'dam Geulhaven_343_2021-2030.txt", sep = ",", skip = 31, header = TRUE); head(knmi_343); str(knmi_343)
+knmi_343 <- knmi_343[knmi_343$YYYYMMDD>20220821 & knmi_343$YYYYMMDD<20220908,]
+
+knmi_344 <- read.csv("D:/1 PhD Studies/1 Data/processed/Aerodyne_Tildas/R'dam airport_344_2021-2030.txt", sep = ",", skip = 31, header = TRUE); head(knmi_344); str(knmi_344)
+knmi_344 <- knmi_344[knmi_344$YYYYMMDD>20220821 & knmi_344$YYYYMMDD<20220908,]
+
+df <- rbind(knmi_330[, c(1:25)], knmi_343[, 1:25], knmi_344[, 1:25])
+
+YY <- as.integer(substr(as.character(df$YYYYMMDD), 1, 4));
+MM <- as.integer(substr(as.character(df$YYYYMMDD), 5, 6));
+DD <- as.integer(substr(as.character(df$YYYYMMDD), 7, 8))
+df$datehour = as.POSIXct(paste0(YY,'-', MM, '-', DD, " ", df$HH, ":00"), format = '%Y-%m-%d %H:%M', tz = "UTC")
+df$date <- as.Date(paste0(YY,'-', MM, '-', DD), format = '%Y-%m-%d', tz = "UTC")
+
+df <- mutate(df, station = case_when(
+  X..STN==330 ~ "Hoek van Holland", X..STN==343 ~ "R'dam Geulhaven", X..STN==344 ~ "R'dam airport"
+))
+names(df)[names(df)=="DD"] <- "WD";
+names(df)[names(df)=="FF"] <- "WS"
+df <- mutate(df, Hour = lubridate::hour(df$datehour))
+#df <- df[df$Hour>=8 & df$Hour<=18,]
+df$WS <- df$WS/10
+
+# load evides wd data
+# unique_date <- seq(from = as.Date("2022-08-22", format = "%Y-%m-%d"), to = as.Date("2022-09-07"), by = '1 day')
+# for(i in 1:17) {
+#   wd <- read.csv(paste0("D:/1 PhD Studies/1 Data/TNO Aerosol trailer/processed/Vaisala_Meteo/meteo_", unique_date[i], ".csv"))
+# wd$datetime <- as.POSIXct(wd$datetime, tz = "UTC")
+# wd$hour <- format(wd$datetime, format = "%Y-%m-%d %H:00:00", tz = "UTC")
+# wd <- group_by(wd, hour) %>% summarise(WD = mean.cir(WD), WS = mean(WS, na.rm = TRUE))
+# }
+
+# Evides <- read.csv(paste0("D:/1 PhD Studies/1 Data/TNO Aerosol trailer/processed/Vaisala_Meteo/data.csv"))
+# Evides$datetime <- as.POSIXct(Evides$datetime, tz = "UTC")
+# Evides$date <- as.Date(Evides$datetime, tz = "UTC") 
+# Evides <- Evides[Evides$date %in% unique_date, ]
+# 
+# Evides$datehour <- format(Evides$datetime, format = "%Y-%m-%d %H:00:00", tz = "UTC")
+# Evides <- mutate(Evides, Hour = lubridate::hour(Evides$datehour))
+# Evides <- Evides[Evides$Hour>=8 & Evides$Hour<=18,]
+# 
+# Evides <- group_by(Evides, datehour) %>% summarise(WD = mean.cir(WD), WS = mean(WS, na.rm = TRUE))
+# Evides$station = "Evides";
+# Evides$date <- as.Date(Evides$datehour, tz = "UTC") 
+# 
+# data <- rbind(df[, c("datehour", "WD", "WS", "station", "date")], Evides)
+# 
+# data$date <- as.factor(data$date)
+# p.wd <- ggplot(data)+
+#   geom_boxplot(mapping = aes(x = date, y = WD, fill = station), outlier.shape = NA)+
+#   scale_fill_viridis(discrete = TRUE)+
+#   theme_bw()+
+#   theme(
+#   axis.title.x = element_blank(), axis.text.x = element_blank(),             
+#   legend.position = c(0.6, 0.7),
+#   legend.text = element_text(),
+#   legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+#   legend.background = element_rect(fill = "transparent", colour = NA),
+#   legend.key = element_rect(fill = NA, colour = NA))+
+#   ylim(-5, 360)+
+#   ylab( 'wind direction [deg]')
+# 
+# p.ws <- ggplot(data)+
+#   geom_boxplot(mapping = aes(x = date, y = WS, fill = station), outlier.shape = NA)+
+#   scale_fill_viridis(discrete = TRUE)+
+#   theme_bw()+
+#   theme(
+#   axis.title.x = element_blank(), axis.text.x = element_text(angle = 90),              
+#   legend.position = 'right',
+#   legend.text = element_text(),
+#   legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+#   legend.background = element_rect(fill = "transparent", colour = NA),
+#   legend.key = element_rect(fill = NA, colour = NA))+
+#   ylab( 'wind speed [m/s]')
+# 
+# tiff("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/wd&ws.tiff", units="mm", width=200, height=180, res=300)
+# grid.arrange(p.wd, p.ws)
+# while (!is.null(dev.list()))  dev.off()
+
+
+
+# plot wind direction and speed for three KNMI stations per day
+for(i in 1:length(unique_date)) {
+  
+  df.1 <- df[df$date==unique_date[i], ]
+  
+  p.wd <- ggplot(df.1)+
+  geom_line(mapping = aes(x = datehour, y = WD, group = station, colour = station))+
+  scale_fill_viridis(discrete = TRUE)+
+  theme_bw()+
+  theme(
+  axis.title.x = element_blank(), axis.text.x = element_blank(),             
+  legend.position = c(0.6, 0.7),
+  legend.text = element_text(),
+  legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+  legend.background = element_rect(fill = "transparent", colour = NA),
+  legend.key = element_rect(fill = NA, colour = NA))+
+  ylim(-5, 360)+
+  ylab( 'wind direction [deg]')
+
+p.ws <- ggplot(df.1)+
+  geom_line(mapping = aes(x = datehour, y = WS, group = station, colour = station))+
+  scale_fill_viridis(discrete = TRUE)+
+  theme_bw()+
+  theme(
+  axis.title.x = element_blank(), axis.text.x = element_text(),              
+  legend.position = 'none',
+  legend.text = element_text(),
+  legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+  legend.background = element_rect(fill = "transparent", colour = NA),
+  legend.key = element_rect(fill = NA, colour = NA))+
+  ylab( 'wind speed [m/s]')
+
+
+tiff(paste0("D:/1 PhD Studies/3.5 Publications/Manuscript#3_Rotterdam_emission_estimates/Figures/Wind_measurements/", unique_date[i], "_wd&ws.tiff"), units="mm", width=200, height=180, res=300)
+grid.arrange(p.wd, p.ws)
+while (!is.null(dev.list()))  dev.off()
+
+}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

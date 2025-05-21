@@ -1,0 +1,1049 @@
+---
+title: "2022_09_01_Rotterdam_flight"
+author: "Xin Tong"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: yes
+    number_sections: yes
+  html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+    code_folding: hide
+  word_document:
+    toc: yes
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.width = 15, fig.height = 12, fig.align = "center")
+library(ggplot2) # package for plotting
+library(RColorBrewer)
+library(ggmap)
+library(ggforce)  # facet_zoom
+library(ggpubr) #stat_regline_equation
+library(ggpmisc)  #stat_poly_line() stat_poly_eq()
+library(gridExtra) #grid.arrange
+library(grid)
+library(gtable) #gtable_filter
+library(reshape2)
+library(dplyr)
+library(rWind) # uv2ds     derive the wind speed and direction
+library(suncalc)  # getsunlighttime
+library(geosphere) # calculate the distance with the input of the latitude and longitude
+library(plotly)
+sapply(list.files(pattern="[.]R$", path="c:/Users/xin09/Dropbox/xin/Rscripts/functions", full.names=TRUE), source)
+
+```
+
+
+
+```{r load data} 
+
+# load data
+flight <- '0901'
+wdir <- "D:/1 phd studies/1 data/Rotterdam_campaign_2022/"
+
+data <- read.csv(paste0(wdir, flight, "/AirCore/AirCore_retrieval/AirCore_N2O_CO_CO2_CH4_CO_2022", flight, ".csv"))
+
+data <- mutate(data, p.H2O = H2O/18*8.3145*Tair/100,  #unit:hPa/mbar
+               pot = Tair*(1000/Ps)^0.286, ws=rWind::uv2ds(U,V)[,2], wd=rWind::uv2ds(U,V)[,1])#;names(data)
+data <- mutate(data, vir.pot = pot*(1+0.61*p.H2O/1000))
+data <- data.frame(date = ISOdate(data$yyyy, data$mm, data$dd, data$hh, data$min, data$sec, tz='UTC'),data)
+
+# The distance per degree of latitude and longitude
+R=6371000
+per.lat <- pi*R/180
+per.lon <- pi*R/180*cos(mean(data$lat)*pi/180)
+
+# SMOOTH COS
+gaussian <- gau.sm(data, 50, 'COS.ac.ppt')
+data <- merge(data, gaussian[,-3], by='time'); names(data)[names(data)=='smooth'] <- 'smooth.COS'
+# smooth n2o
+gaussian <- gau.sm(data, 15, 'N2O.ac.ppb'); data <- cbind(data, smooth.N2O = gaussian[, 2], smooth.N2O.sd  = gaussian[,3])
+# smooth ch4
+gaussian <- gau.sm(data, 15, 'CH4.ac.ppb'); data <- cbind(data, smooth.CH4 = gaussian[, 2], smooth.CH4.sd  = gaussian[,3])
+
+# select vertical profiles'
+if (flight=='0901') {
+  sel.alt.as <- data[which(data$time>=(12*3600+24*60) &	data$time<=	(12*3600+37*60+55)), ] 
+  sel.alt.des <- data[which(data$time>=	(12*3600+37*60+55) &	data$time <= (12*3600+47*60)), ]
+  
+    data <- mutate(data, flag = case_when(
+      # following the wind direction, number the flight leg
+      time>(12*3600+47*60+50) & time<(12*3600+58*60+19) ~ "1st.transect",
+      time>(13*3600+2*60+32) & time<(13*3600+15*60+12) ~ "2nd.transect",
+      time>(13*3600+19*60) & time<(13*3600+30*60+51) ~ "3rd.transect",
+      time>(13*3600+34*60) & time<(13*3600+48*60) ~ "4th.transect",
+      time>(13*3600+51*60) & time<(14*3600) ~ "5th.transect",
+      time>(14*3600+5*60) & time<(14*3600+14*60+53) ~ "6th.transect",
+    ))
+} 
+
+# calculate the average wd and ws without vertical profiles
+df <- data[which(!is.na(data$flag)),]
+```
+
+```{r use the package "plotly" to plot the 3D flight track with concentrations}
+#| eval = FALSE
+#| 
+col = c("#00007F", "#0000FF", "#007FFF", "#00FFFF", "#7FFF7F", "#FFFF00", "#FF7F00", "#FF0000", "#7F0000")
+
+# species.list <- list( plotly::TeX("CO_\\text{2}[ppm]"), bquote(''*CH[4]*' [ppb]'), bquote(''*CO*' [ppb]'), # bquote(''*N[2]*O*' [ppb]'), bquote(''*COS*' [ppt]'))
+# cannot show the subscript. Not solved yet!
+
+for (i in 1:5) {
+  p.3D <- plot_ly(data,
+                  x = ~lon,
+                  y = ~lat,
+                  z = ~alt,
+                  mode = "markers",
+                  type = "scatter3d",
+                  color = ~data[, i + 24],
+                  colors = colorRampPalette(col)(length(data)),
+                  marker = list(size = 4, opacity = 0),
+                  text = paste("<br>Longitude:", round(data$lon, 5), '[&deg;]',
+                               "<br>Latitude:", round(data$lat, 5), '[&deg;]',
+                               "<br>Altitude:", round(data$alt, 5), '[m]',
+                               "<br>", names(data)[i+24], ": ", round(data[, i + 24], 2),
+                               "<br>UTC_Time:", as.character(data$date))) %>%
+    colorbar(title = names(data)[i+24], len = 1) %>%
+    layout(
+      title = names(data)[i+24],
+      scene = list(
+        xaxis = list(title = 'Longitude [deg]', range = c(min(data$lon) - 0.001, max(data$lon) + 0.001)),
+        yaxis = list(title = 'Latitude [deg]', range = c(min(data$lat) - 0.001, max(data$lat) + 0.001)),
+        zaxis = list(title = 'Altitude [m]')
+      )
+    )
+
+htmlwidgets::saveWidget(p.3D, file = paste0(wdir, flight, "/plots/", flight,  "_3D_", names(data)[i+24], ".html"))
+
+}
+
+```
+
+
+
+\newpage
+# **Check if the conditions are suitable to apply the mass balance approach**
+
+## **if trace gas within PBL is mixed well**
+
+### **vertical profiles of potential temperature and trace gases**
+```{r vertical profile}
+  p.pot <- ggplot2::ggplot()+
+    geom_point(sel.alt.as, mapping = aes(x = pot, y = alt, colour = 'as'), size=0.3)+
+    geom_point(sel.alt.des, mapping = aes(x = pot, y = alt, colour = 'des'), size=0.3)+
+    geom_hline(yintercept= c(1250, 1350), linetype="dashed", color = "black")+
+    #annotate('text',x =300, y = 1200, label = 'PBL=1250 m')+
+    theme(axis.title.y = element_blank(),
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    scale_color_manual(labels = c("as", "des"), values = c("blue", "red"))+
+    xlab('Potential Temperature [K]')
+  
+  p.Tair <- ggplot()+
+    geom_point(sel.alt.as, mapping = aes(x = Tair, y = alt, colour = 'as'), size=0.3)+
+    geom_point(sel.alt.des, mapping = aes(x = Tair, y = alt, colour = 'des'), size=0.3)+
+    geom_hline(yintercept= 1250, linetype="dashed", color = "black")+
+    theme(axis.title.y = element_blank(),
+          legend.position = 'right', legend.title=element_blank(),
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    scale_color_manual(labels = c("as", "des"), values = c("blue", "red"))+
+    xlab('Tair [K]')
+  
+  p.N2O <- ggplot()+
+    geom_point(sel.alt.as, mapping = aes(x = N2O.ac.ppb, y = alt, colour = 'as'), size=0.3)+
+    geom_point(sel.alt.des, mapping = aes(x = N2O.ac.ppb, y = alt, colour = 'des'), size=0.3)+
+    geom_path(sel.alt.as, mapping = aes(x = smooth.N2O, y = alt, colour = 'as'), linewidth=0.6)+
+    geom_path(sel.alt.des, mapping = aes(x = smooth.N2O, y = alt, colour = 'des'), linewidth=0.6)+
+
+    geom_hline(yintercept= 1250,  linetype="dashed", color = "black")+
+    theme(axis.title.y = element_blank(),
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    scale_color_manual(labels = c("as", "des"), values = c("blue", "red"))+
+    xlab( bquote(''*N[2]*O*' [ppb]'))
+  
+  p.CO <- ggplot()+
+    geom_point(sel.alt.as, mapping = aes(x = CO.ac.ppb, y = alt, colour = 'as'), size=0.3)+
+    geom_point(sel.alt.des, mapping = aes(x = CO.ac.ppb, y = alt, colour = 'des'), size=0.3)+
+    geom_hline(yintercept= 1250,  linetype="dashed", color = "black")+
+    theme(axis.title.y = element_blank(),
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    scale_color_manual(labels = c("as", "des"), values = c("blue", "red"))+
+    xlab( bquote(''*CO*' [ppb]'))
+  
+  p.CH4 <- ggplot()+
+    geom_point(sel.alt.as, mapping = aes(x = CH4.ac.ppb, y = alt, colour = 'as'), size=0.3)+
+    geom_point(sel.alt.des, mapping = aes(x = CH4.ac.ppb, y = alt, colour = 'des'), size=0.3)+
+    geom_hline(yintercept= 1000, linetype="dashed", color = "black")+
+    theme(axis.title.y = element_blank(),
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    scale_color_manual(labels = c("as", "des"), values = c("blue", "red"))+
+    xlab( bquote(''*CH[4]*' [ppb]'))
+  
+  p.CO2 <- ggplot()+
+    geom_point(sel.alt.as, mapping = aes(x = CO2.ac.ppm, y = alt, colour = 'as'), size=0.3)+
+    geom_point(sel.alt.des, mapping = aes(x = CO2.ac.ppm, y = alt, colour = 'des'), size=0.3)+
+    geom_hline(yintercept= 1000, linetype="dashed", color = "black")+
+    theme(axis.title.y = element_blank(),
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    scale_color_manual(labels = c("as", "des"), values = c("blue", "red"))+
+    xlab( bquote(''*CO[2]*' [ppm]'))
+  
+  p.COS <- ggplot()+
+    geom_point(sel.alt.as, mapping = aes(x = COS.ac.ppt, y = alt, colour = 'as'), size=0.3)+
+    geom_point(sel.alt.des, mapping = aes(x = COS.ac.ppt, y = alt, colour = 'des'), size=0.3)+
+    geom_path(sel.alt.as, mapping = aes(x = smooth.COS, y = alt, colour = 'as'), linewidth=0.6)+
+    geom_path(sel.alt.des, mapping = aes(x = smooth.COS, y = alt, colour = 'des'), linewidth=0.6)+
+    
+    geom_hline(yintercept= 1250, linetype="dashed", color = "black")+
+    theme(axis.title.y = element_blank(),
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    scale_color_manual(labels = c("as", "des"), values = c("blue", "red"))+
+    xlab( bquote(''*COS*' [ppt]'))
+  
+#tiff(paste0(wdir, flight, '/plots/', flight, '_vertical_profiles.tiff'),  units="mm", width=300, height=200, res=300)
+grid.arrange(arrangeGrob(p.pot, p.Tair, nrow = 1,
+                           top = textGrob("vertical profiles", vjust = 1, gp = gpar(fontface = "bold", cex = 1.5)),
+                           left = textGrob("alt [m]", rot = 90, vjust = 1)), 
+               arrangeGrob(p.N2O, p.CO, p.CH4, p.CO2, p.COS, nrow = 1,
+                           left = textGrob("alt [m]", rot = 90, vjust = 1)), 
+               #widths=unit.c(unit(1, "npc")-legend$width, legend$width), 
+               nrow=2)
+# print(p)
+# while (!is.null(dev.list()))  dev.off()
+```
+### **correlation of trace gases and altitude within CBL**
+
+```{r correlation with altitude}
+ 
+data.n2o <- average.by.alt(df.as,  'N2O.ac.ppb', 50)#; nrow(data.n2o); names(data.n2o)
+data.ch4 <- average.by.alt(df.as,  'CH4.ac.ppb', 50)#; nrow(data.ch4); names(data.ch4)
+
+  p.n2o <- ggplot(data.n2o, mapping = aes(x = alt.average, y = mean))+geom_point()+
+    stat_smooth(method = 'lm', formula = y~x)+
+    
+    stat_regline_equation(aes(label =  paste(after_stat(eq.label), after_stat(rr.label), sep = "~~~~")),
+                          formula = y ~ x,
+                          show.legend = FALSE)+
+    ylab( bquote(''*N[2]*O*' [ppb]'))+xlab('altitude [m]')
+    
+  
+  p.ch4 <- ggplot(data.ch4, mapping = aes(x = alt.average, y = mean))+geom_point()+
+    stat_smooth(method = 'lm', formula = y~x)+
+    
+    stat_regline_equation(aes(label =  paste(after_stat(eq.label), after_stat(rr.label), sep = "~~~~")),
+                          formula = y ~ x,
+                          show.legend = FALSE)+
+    ylab( bquote(''*CH[4]*' [ppb]'))+xlab('altitude [m]')
+    
+
+grid.arrange(p.n2o, p.ch4, ncol=2)
+
+```
+
+
+## **wind direction and speed**
+### **time series of wind direction and speed**
+```{r plot wd and ws}
+p.wd <- ggplot()+
+    geom_point(data, mapping = aes(y = wd, x = date, colour = flag), size=0.3)+
+    scale_x_datetime(breaks='20 min', labels = scales::date_format("%H:%M"))+  
+    theme(
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    ylab( 'wind direction [deg]')
+
+p.ws <- ggplot()+
+    geom_point(data, mapping = aes(y = ws, x = date, colour = flag), size=0.3)+
+    scale_x_datetime(breaks='20 min', labels = scales::date_format("%H:%M"))+  
+    theme(
+          legend.title=element_blank(), legend.position = 'bottom',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(2,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    ylab( 'wind speed [m/s]')
+grid.arrange(p.wd, p.ws, nrow=2)
+```
+
+### **altitude VS wind direction and speed**
+```{r altitude VS wind direction and speed}
+  p.ws <- ggplot()+
+    geom_point(sel.alt.as, mapping = aes(x = ws, y = alt, colour = 'as'), size=0.3)+
+    geom_point(sel.alt.des, mapping = aes(x = ws, y = alt, colour = 'des'), size=0.3)+
+    #geom_hline(yintercept= 1250, linetype="dashed", color = "black")+
+    #annotate('text',x =300, y = 1200, label = 'PBL=1250 m')+
+    theme(axis.title.y = element_blank(),
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    scale_color_manual(labels = c("as", "des"), values = c("blue", "red"))+
+    xlab('Wind speed [m/s]')
+
+  p.wd <- ggplot()+
+    geom_point(sel.alt.as, mapping = aes(x = wd, y = alt, colour = 'as'), size=0.3)+
+    geom_point(sel.alt.des, mapping = aes(x = wd, y = alt, colour = 'des'), size=0.3)+
+    #geom_hline(yintercept= 1250, linetype="dashed", color = "black")+
+    theme(axis.title.y = element_blank(),
+          legend.position = c(0.75, 0.75), legend.title=element_blank(),
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    scale_color_manual(labels = c("as", "des"), values = c("blue", "red"))+
+    xlab('Wind direction [deg]')
+  
+  df <- rbind(sel.alt.as, sel.alt.des)
+  df <- df[which(df$alt<1000),]
+  p.ws.fit <- ggplot(df, mapping=aes(x = alt, y = ws))+
+    geom_point(size=0.3)+
+    stat_smooth( method = 'lm', formula = y~x)+
+    stat_regline_equation(mapping = aes( label =  paste(after_stat(eq.label), after_stat(rr.label), sep = "~~~~")),
+                          formula = y ~ x, show.legend = FALSE)+
+    theme(
+      legend.title=element_blank(), legend.position = 'none',
+      legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+      legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+      legend.background = element_rect(fill = "transparent", colour = NA),
+      legend.key = element_rect(fill = NA, colour = NA))+
+    ylab('Wind speed [m/s]')
+
+      p.wd.fit <- ggplot(df, mapping=aes(x = alt, y = wd))+
+      geom_point(size=0.3)+
+      stat_smooth( method = 'lm', formula = y~x)+
+      stat_regline_equation(mapping = aes( label =  paste(after_stat(eq.label), after_stat(rr.label), sep = "~~~~")),
+                            formula = y ~ x, show.legend = FALSE)+
+      theme(
+        legend.title=element_blank(), legend.position = 'none',
+        legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+        legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+        legend.background = element_rect(fill = "transparent", colour = NA),
+        legend.key = element_rect(fill = NA, colour = NA))+
+      ylab('Wind direction [deg]')
+
+      grid.arrange(arrangeGrob(p.ws, p.wd, nrow = 1,
+                         top = textGrob("vertical profile", vjust = 1, gp = gpar(fontface = "bold", cex = 1.5)),
+                         left = textGrob("alt [m]", rot = 90, vjust = 1)),
+             arrangeGrob(p.ws.fit, p.wd.fit, nrow = 1),
+             #widths=unit.c(unit(1, "npc")-legend$width, legend$width),
+             nrow=2)
+
+```
+
+
+## **overview of 2D concentration map and time series** 
+```{r plot 2D concetration map}
+#| eval=FALSE
+
+col = c("#00007F", "#0000FF", "#007FFF", "#00FFFF", "#7FFF7F", "#FFFF00", "#FF7F00", "#FF0000", "#7F0000");
+
+range.lat<-c(max(data$lat)+0.05, min(data$lat))
+range.lon<-c(min(data$lon), max(data$lon))
+sbbox <- make_bbox(lon = range.lon, lat = range.lat, f = .2)
+
+# get map, not a google map since it has been asked to pay for it
+map.flight = get_map(location=sbbox, zoom=10, maptype = c("terrain"), source = "stamen", scale = "auto") # use ggmap(map) in ggplot environment to plot
+
+# convert a wind dataframe during the course of the flight
+wind <- data.frame(lon = mean(data$lon), lat = mean(data$lat), wd = mean.cir(data$wd), ws = mean(data$ws),
+                   U = mean(data$U), V = mean(data$V))
+beta <- wind$wd
+
+# LOAD the locations of WWTP
+WWTP <- readxl::read_xlsx("D:/1 PhD Studies/1 Data/Rotterdam_campaign_2022/WWTP.xlsx")
+
+# create a dataframe for the locations of arbitary center points
+center.point <- data.frame(
+  flag = c("1st.transect", "2nd.transect", "3rd.transect", "4th.transect", "5th.transect", "6th.transect"),
+  lon = c(4.6879, 4.5225, 4.4231, 4.3191, 4.2006, 4.0128),
+  lat = c(51.9512, 51.9429, 51.9412, 51.936, 51.9325, 51.9233)
+)
+
+# load the city boundary of Rotterdam
+library(geodata) # gadm
+d <- gadm("Netherlands", level=2, path="c:/users/xin09/", version="latest", resolution=1)
+rotterdam <- geom(d[341,], df = TRUE) 
+
+# create name list
+species.list <- list( bquote(''*CO[2]*' [ppm]'), bquote(''*CH[4]*' [ppb]'), bquote(''*CO*' [ppb]'), bquote(''*N[2]*O*' [ppb]'), bquote(''*COS*' [ppt]'))
+names <- c('CO2', 'CH4', 'CO', 'N2O', 'COS')
+  
+if(flight=="0901"){ x0 = 4.5; y0 = 52.05}
+for(i in 1:5){
+  
+  p <- ggmap(map.flight)+
+  geom_point(data = data, mapping = aes(x = lon, y = lat, colour = data[, i+23]), size=0.7)+
+  #geom_point(data = WWTP, mapping = aes(x = lon, y = lat), colour = 'pink', shape = 'diamond', size=2)+
+  geom_point(data = center.point, mapping = aes(x = lon, y = lat), colour = 'blue', shape = 'diamond', size=2)+
+
+  geom_segment(data = range, mapping = aes(x = lon[1], y = lat[1], xend = lon[3], yend = lat[3]))+
+  geom_segment(data = range, mapping = aes(x = lon[2], y = lat[2], xend = lon[4], yend = lat[4]))+
+  geom_segment(wind, 
+    mapping = aes(
+      x = x0, y = y0, 
+      xend = x0 + 10000*sin(beta*pi/180)/per.lon, 
+      yend = y0 + 10000*cos(beta*pi/180)/per.lat
+    ),
+    arrow = arrow(length = unit(0.1, "npc")), linewidth = 2
+  )+
+
+  annotate('text', x = x0+0.05, y = y0+0.05, label = 'wind', size = 10)+
+  scale_colour_gradientn( colors = colorRampPalette(col)(length(data)))+ 
+  labs(colour =  do.call("expression", species.list[i]), x = 'Longitude [deg]', y = 'Latitude [deg]')+
+  
+  theme_classic()+
+  theme_bw(base_size = 16)+
+  theme( plot.title=element_text(size=12, hjust=0.5, vjust=0.5, face='bold'), plot.margin = rep(unit(0,"null"),4),
+         axis.title.x = element_text(size=12), axis.text.x = element_text(size=12),
+         axis.title.y = element_text(size=12), axis.text.y = element_text(size=12)
+  )
+
+tiff(paste0(wdir, flight, '/plots/', flight, '_2D_',  names[i], '_map.tiff'),  units="mm", width=150, height=150, res=300)
+print(p)
+while (!is.null(dev.list()))  dev.off()
+
+}
+
+
+```
+
+```{r interactive 2D concentration map with an arrow of wd}
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# determine the zero point on each transect following wind direction
+# plot the wind direction on the 2D flight track map using plotly to determine easily the zero point
+wind <- data.frame(lon = mean(df$lon), lat = mean(df$lat), wd = mean.cir(df$wd), ws = mean(df$ws), U = mean(df$U), V = mean(df$V))
+if(flight=="0901"){ x0 = 4.7; y0 = 51.95}
+col = c("#00007F", "#0000FF", "#007FFF", "#00FFFF", "#7FFF7F", "#FFFF00", "#FF7F00", "#FF0000", "#7F0000")
+
+p.2D <- plot_ly(data,
+                x = ~lon,
+                y = ~lat,
+                mode = "markers",
+                type = "scatter",
+                color = ~N2O.ac.ppb,
+                colors = colorRampPalette(col)(length(data$N2O.ac.ppb)),
+                marker = list(size = 4),
+                text = paste("<br>Longitude:",round(data$lon, 5), '[&deg;]',
+                             "<br>Latitude:",round(data$lat,5), '[&deg;]',
+                             "<br>Altitude:",round(data$alt,5), '[m]',
+                             "<br>N2O:", as.character(round(data$N2O.ac.ppb, 2)), '[ppb]',
+                             '<br>UTC_Time:', as.character(data$date))
+) %>%
+  colorbar(title = 'N2O [ppb]', len=1) %>%
+  add_annotations( x = ~x0 + 50000*sin(wind$wd*pi/180)/per.lon,
+                   y = ~y0 + 50000*cos(wind$wd*pi/180)/per.lat,
+                   xref = "x", yref = "y",
+                   axref = "x", ayref = "y",
+                   text = "",
+                   showarrow = T,
+                   ax = ~x0,
+                   ay = ~y0,
+                   data = wind) %>%
+  layout(scene = list(xaxis = list(title = 'Longitude [deg]', range = c(min(data$lon) - 0.001, max(data$lon) + 0.001)),
+                      yaxis = list(title = 'Latitude [deg]', range = c(min(data$lat) - 0.001, max(data$lat) + 0.001)))
+)
+htmlwidgets::saveWidget(p.2D, file = paste0(wdir, flight, '/plots/', flight,  '_2D_N2O.html'))
+```
+
+```{r convert the coordinates into the distance perpendicular to wind direction}
+# for each plane perpendicular to wd based on each transect, the distance of each point to the center point
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  transect1 <- data[which(data$flag=='1st.transect'),]
+  lon.zero.1 <- 4.6879
+  lat.zero.1 <- 51.9512
+  
+  distance <- NULL
+  for(i in 1:nrow(transect1)){
+    if(is.na(transect1$lat[i])){
+            d <- NA
+    } else {
+            d <- sqrt((lon.zero.1-transect1$lon[i])^2*per.lon^2+(lat.zero.1-transect1$lat[i])^2*per.lat^2)*sin((mean.cir(df$wd)-bearing(c(4.6326, 51.9995), c(4.7215, 51.9235)))*pi/180)
+
+      if(transect1$lat[i]> lat.zero.1){
+        d <- d
+      } else {
+              d <- d*(-1)
+      }
+    }
+    distance <- c(distance, d)
+  }
+  transect1 <- cbind(transect1, distance)
+
+  
+  transect2 <- data[which(data$flag=='2nd.transect'),]
+  lon.zero.2 <- 4.5225
+  lat.zero.2 <- 51.9429
+  
+  distance <- NULL
+  for(i in 1:nrow(transect2)){
+    if(is.na(transect2$lat[i])){
+            d <- NA
+    } else {
+    d <- sqrt((lon.zero.2-transect2$lon[i])^2*per.lon^2+(lat.zero.2-transect2$lat[i])^2*per.lat^2)*sin((mean.cir(df$wd)-bearing(c(4.4749, 52.0018), c(4.6202, 51.8485)))*pi/180)
+    if(transect2$lat[i]> lat.zero.2){
+      d <- d
+    } else {
+      d <- d*(-1)
+    }
+    }
+    distance <- c(distance, d)
+  }
+  transect2 <- cbind(transect2, distance)
+
+  
+  transect3 <- data[which(data$flag=='3rd.transect'),]
+  lon.zero.3 <- 4.4231
+  lat.zero.3 <- 51.9412
+  
+  distance <- NULL
+  for(i in 1:nrow(transect3)){
+    if(is.na(transect3$lat[i])){
+            d <- NA
+    } else {
+    d <- sqrt((lon.zero.3-transect3$lon[i])^2*per.lon^2+(lat.zero.3-transect3$lat[i])^2*per.lat^2)*sin((mean.cir(df$wd)-bearing(c(4.3616, 52.0208), c(4.4905, 51.855)))*pi/180)
+    if(transect3$lat[i]> lat.zero.3){
+      d <- d
+    } else {
+      d <- d*(-1)
+    }
+    }
+    distance <- c(distance, d)
+  }
+  transect3 <- cbind(transect3, distance)
+
+  
+  transect4 <- data[which(data$flag=='4th.transect'),]
+  lon.zero.4 <- 4.3191
+  lat.zero.4 <- 51.936
+  
+  distance <- NULL
+  for(i in 1:nrow(transect4)){
+    if(is.na(transect4$lat[i])){
+            d <- NA
+    } else {
+    d <- sqrt((lon.zero.4-transect4$lon[i])^2*per.lon^2+(lat.zero.4-transect4$lat[i])^2*per.lat^2)*sin((mean.cir(df$wd)-bearing(c(4.2523, 52.0115), c(4.3723, 51.8622)))*pi/180)
+    if(transect4$lat[i]> lat.zero.4){
+      d <- d
+    } else {
+      d <- d*(-1)
+    }
+    }
+    distance <- c(distance, d)
+  }
+  transect4 <- cbind(transect4, distance)
+
+  
+  transect5 <- data[which(data$flag=='5th.transect'),]
+  lon.zero.5 <- 4.2006
+  lat.zero.5 <- 51.9325
+  
+  distance <- NULL
+  for(i in 1:nrow(transect5)){
+    if(is.na(transect5$lat[i])){
+            d <- NA
+    } else {
+    d <- sqrt((lon.zero.5-transect5$lon[i])^2*per.lon^2+(lat.zero.5-transect5$lat[i])^2*per.lat^2)*sin((mean.cir(df$wd)-bearing(c(4.1318, 52.0017), c(4.2665, 51.8623)))*pi/180)
+    if(transect5$lat[i]> lat.zero.5){
+      d <- d
+    } else {
+      d <- d*(-1)
+    }
+    }
+    distance <- c(distance, d)
+  }
+  transect5 <- cbind(transect5, distance)
+
+  
+  transect6 <- data[which(data$flag=='6th.transect'),]
+  lon.zero.6 <- 4.0128
+  lat.zero.6 <- 51.9233
+  
+  distance <- NULL
+  for(i in 1:nrow(transect6)){
+    if(is.na(transect6$lat[i])){
+            d <- NA
+    } else {
+    d <- sqrt((lon.zero.6-transect6$lon[i])^2*per.lon^2+(lat.zero.6-transect6$lat[i])^2*per.lat^2)*sin((mean.cir(df$wd)-bearing(c(3.9761, 51.9643), c(4.0877, 51.8294)))*pi/180)
+    if(transect6$lat[i]> lat.zero.6){
+      d <- d
+    } else {
+      d <- d*(-1)
+    }
+    }
+    distance <- c(distance, d)
+  }
+  transect6 <- cbind(transect6, distance)
+
+  transect <- rbind(transect1, transect2, transect3, transect4, transect5)#, transect6)
+```
+
+```{r plot the concentration along flight track}
+  #~~~~~~~~~~~~~~~~~~~~~~~ plot ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    p.n2o <- ggplot(transect)+
+    geom_point(mapping = aes(x = distance, y = N2O.ac.ppb, group = flag, colour = flag), size = 0.1)+
+    geom_path(mapping = aes(x = distance, y = smooth.N2O, group = flag, colour = flag), linewidth = 0.8)+
+    geom_ribbon( show.legend = FALSE,
+                 mapping = aes(x = distance, ymin= smooth.N2O-smooth.N2O.sd, ymax= smooth.N2O+smooth.N2O.sd, fill= flag, colour = flag),
+                 alpha=0.1,       #transparency
+                 linetype='dashed',      #solid, dashed or other line types
+                 #border line color
+                 linewidth=0.2)+
+    geom_vline(xintercept = c(-6500, -1250))+
+    stat_poly_line(data = lm.5.df, mapping = aes(x = distance, y = N2O.ac.ppb)) +
+
+    # geom_hline(yintercept = 338.2)+
+      theme_bw()+
+      theme( plot.title=element_text(size=12, hjust=0.5, vjust=0.5, face='bold'), plot.margin = rep(unit(0,"null"),4),
+             #axis.title.x = element_blank(),axis.text.x = element_blank(),
+             axis.title.x = element_text(size=12),axis.text.x = element_text(size=12),
+             axis.title.y = element_text(size=12),axis.text.y = element_text(size=12),
+            # axis.title.y.right = element_text(colour = 'lightgreen'), 
+             #axis.text.y.right = element_text(colour = 'lightgreen'),
+             legend.title=element_blank(), legend.position = c(0.3, 0.2),
+             legend.text = element_text(size =12),legend.margin = margin(0,0,0,0),
+             legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+             legend.background = element_rect(fill = "transparent", colour = NA),
+             legend.key = element_rect(fill = NA, colour = NA),
+            strip.background = element_rect(fill = NA, colour = NA),strip.text.x  = element_blank() )+
+ylab( bquote(''*N[2]*O*' [ppb]'))
+
+    p.n2o.sd <- ggplot(transect)+
+    geom_line(mapping = aes(x = distance, y = smooth.N2O.sd, group = flag, colour = flag), linewidth = 0.1)+
+      theme_bw()+
+      theme( plot.title=element_text(size=12, hjust=0.5, vjust=0.5, face='bold'), plot.margin = rep(unit(0,"null"),4),
+             #axis.title.x = element_blank(),axis.text.x = element_blank(),
+             axis.title.x = element_text(size=12),axis.text.x = element_text(size=12),
+             axis.title.y = element_text(size=12),axis.text.y = element_text(size=12),
+            # axis.title.y.right = element_text(colour = 'lightgreen'), 
+             #axis.text.y.right = element_text(colour = 'lightgreen'),
+             legend.title=element_blank(), legend.position = c(0.3, 0.2),
+             legend.text = element_text(size =12),legend.margin = margin(0,0,0,0),
+             legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+             legend.background = element_rect(fill = "transparent", colour = NA),
+             legend.key = element_rect(fill = NA, colour = NA),
+            strip.background = element_rect(fill = NA, colour = NA),strip.text.x  = element_blank() )+
+ylab( bquote(''*N[2]*O*'sd [ppb]'))
+
+    p.ch4 <- ggplot(transect)+
+    geom_point(mapping = aes(x = distance, y = CH4.ac.ppb, group = flag, colour = flag), size = 0.1)+
+    geom_path(mapping = aes(x = distance, y = smooth.CH4, group = flag, colour = flag), linewidth = 0.8)+
+    geom_ribbon( show.legend = FALSE,
+                 mapping = aes(x = distance, ymin= smooth.CH4-smooth.CH4.sd, ymax= smooth.CH4+smooth.CH4.sd, fill= flag, colour = flag),
+                 alpha=0.1,       #transparency
+                 linetype='dashed',      #solid, dashed or other line types
+                 #border line color
+                 linewidth=0.2)+
+    #geom_vline(xintercept = c(-8000, 12000))+
+      theme_bw()+
+      theme( plot.title=element_text(size=12, hjust=0.5, vjust=0.5, face='bold'), plot.margin = rep(unit(0,"null"),4),
+             #axis.title.x = element_blank(),axis.text.x = element_blank(),
+             axis.title.x = element_text(size=12),axis.text.x = element_text(size=12),
+             axis.title.y = element_text(size=12),axis.text.y = element_text(size=12),
+            # axis.title.y.right = element_text(colour = 'lightgreen'), 
+             #axis.text.y.right = element_text(colour = 'lightgreen'),
+             legend.title=element_blank(), legend.position = c(0.7, 0.2),
+             legend.text = element_text(size =12),legend.margin = margin(0,0,0,0),
+             legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+             legend.background = element_rect(fill = "transparent", colour = NA),
+             legend.key = element_rect(fill = NA, colour = NA),
+            strip.background = element_rect(fill = NA, colour = NA),strip.text.x  = element_blank() )+
+    ylab( bquote(''*CH[4]*' [ppb]'))
+    
+    p.ch4.sd <- ggplot(transect)+
+    geom_line(mapping = aes(x = distance, y = smooth.CH4.sd, group = flag, colour = flag), linewidth = 0.1)+
+      theme_bw()+
+      theme( plot.title=element_text(size=12, hjust=0.5, vjust=0.5, face='bold'), plot.margin = rep(unit(0,"null"),4),
+             #axis.title.x = element_blank(),axis.text.x = element_blank(),
+             axis.title.x = element_text(size=12),axis.text.x = element_text(size=12),
+             axis.title.y = element_text(size=12),axis.text.y = element_text(size=12),
+            # axis.title.y.right = element_text(colour = 'lightgreen'), 
+             #axis.text.y.right = element_text(colour = 'lightgreen'),
+             legend.title=element_blank(), legend.position = c(0.3, 0.2),
+             legend.text = element_text(size =12),legend.margin = margin(0,0,0,0),
+             legend.spacing.y = unit(0,'cm'),legend.key.size = unit(0.2,'cm'),
+             legend.background = element_rect(fill = "transparent", colour = NA),
+             legend.key = element_rect(fill = NA, colour = NA),
+            strip.background = element_rect(fill = NA, colour = NA),strip.text.x  = element_blank() )+
+    ylab( bquote(''*CH[4]*'sd [ppb]'))
+
+  #grid.arrange(p.n2o, p.ch4, p.n2o.sd, p.ch4.sd, nrow =2, ncol=2)  
+
+  tiff(paste0("D:/1 PhD Studies/1 Data/Rotterdam_campaign_2022/", flight, "/plots/", flight, "concentration along transect_map.tiff"),  units="mm", width=200, height=150, res=300)
+    grid.arrange(p.n2o, p.ch4, p.n2o.sd, p.ch4.sd, nrow =2, ncol=2)
+    while (!is.null(dev.list()))  dev.off()
+
+```
+
+```{r define plume width}
+  #~~~~~~~~~~~~~~~~~~~~~~~ the horizontal distance for which the plume is defined ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  # based on N2O concentration
+  left <- max(transect2$distance[which(transect2$distance<0 & transect2$smooth.N2O.sd<0.115)]); left
+  right<- min(transect2$distance[which(transect2$distance>5000 & transect2$smooth.N2O.sd<0.125)]); right
+  mean(c(right-left, 5000))
+  # based on CH4 concentration
+  left <- max(transect2$distance[which(transect2$distance<(-10000) & transect2$smooth.CH4.sd<6.25)]); left
+  right<- min(transect2$distance[which(transect2$distance>(-5000) & transect2$smooth.CH4.sd<2.5)]); right
+  mean(c(right-left, 5000))
+
+```
+
+
+```{r time series}
+labels <- group_by(data, flag) %>% summarise_all(.funs = list(~mean(., na.rm=TRUE)))
+labels <- as.data.frame(labels)
+
+  p.N2O <- ggplot()+
+    geom_point(data, mapping = aes(y = N2O.ac.ppb, x = date, colour = flag), size=0.3)+
+    geom_text(labels[which(!is.na(labels$flag)),], mapping = aes(x = date, y = 339, label = round(N2O.ac.ppb,1), colour = flag))+
+    scale_x_datetime(breaks='20 min', labels = scales::date_format("%H:%M"))+  
+    theme(
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    ylab( bquote(''*N[2]*O*' [ppb]'))
+  
+  p.CO <- ggplot()+
+    geom_point(data, mapping = aes(y = CO.ac.ppb, x = date, colour = flag), size=0.3)+
+    scale_x_datetime(breaks='20 min', labels = scales::date_format("%H:%M"))+  
+    theme(
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    ylab( bquote(''*CO*' [ppb]'))
+  
+  p.CH4 <- ggplot()+
+    geom_point(data, mapping = aes(y = CH4.ac.ppb, x = date, colour = flag), size=0.3)+
+    geom_hline(yintercept = c(2020,2030), colour = 'black')+
+    geom_text(labels[which(!is.na(labels$flag)),], mapping = aes(x = date, y = 2010, label = round(CH4.ac.ppb,1), colour = flag))+
+    scale_x_datetime(breaks='20 min', labels = scales::date_format("%H:%M"))+  
+    theme(legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    ylab( bquote(''*CH[4]*' [ppb]'))
+  
+  p.CO2 <- ggplot()+
+    geom_point(data, mapping = aes(y = CO2.ac.ppm, x = date, colour = flag), size=0.3)+
+    scale_x_datetime(breaks='20 min', labels = scales::date_format("%H:%M"))+  
+    theme(
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    ylab( bquote(''*CO[2]*' [ppm]'))
+  
+  p.COS <- ggplot()+
+    geom_point(data, mapping = aes(y = COS.ac.ppt, x = date, colour = flag), size=0.3)+
+    geom_line(data, mapping = aes(y = smooth.COS, x = date), linewidth=0.8, colour = 'blue')+
+    scale_x_datetime(breaks='20 min', labels = scales::date_format("%H:%M"))+  
+    theme(
+          legend.title=element_blank(), legend.position = 'none',
+          legend.text = element_text(size =15),legend.margin = margin(0,0,0,0),
+          legend.spacing = unit(0,'cm'),legend.key.size = unit(1,'cm'),
+          legend.background = element_rect(fill = "transparent", colour = NA),
+          legend.key = element_rect(fill = NA, colour = NA))+
+    ylab( bquote(''*COS*' [ppt]'))
+  
+ # tiff(paste0(wdir, flight, '/plots/', flight, '_smooth_concentration_time_series.tiff'),  units="mm", width=300, height=250, res=300)
+  grid.arrange(p.N2O, p.CO, p.CH4, p.CO2, p.COS, ncol = 1 )  
+  #while (!is.null(dev.list()))  dev.off()
+```
+
+
+
+\newpage
+# **Calculate fluxes**
+
+##**residential area's emission**
+For N2O emissions, we have tried to divide the residential domains into two areas, but the enhancements relative to upwind bg are smaller than the bg uncertainty. 1) the area between the 1st and 4th transects, and 2) the area between the 4th and 5th transects. 
+If we treated the downwind N2O plume on the 5th transect as the urban scale, resulting from the whole residential areas' emissions. The plume width should be selected as the city's width, ranging from -10000 to 1250. The N2O enhancements (0.23 ppb) relative to the 1st transect are equal to bg uncertainty (0.18 ppb), which is controversial to be used to estimate mass balance fluxes.
+If the downwind N2O plume on the 5th transect is caused by point sources, the plume width is defined from -6500 m to -1250 m, and the N2O enhancements relative to the upwind bg (4th transect, downwind `r sqrt(((4.2008-4.3196)*per.lon)^2+((51.9322-51.9352)*per.lat)^2)/1000` km to the 5th transect) and the 3rd transect bg (downwind `r sqrt(((4.2008-4.424)*per.lon)^2+((51.9322-51.9399)*per.lat)^2)/1000` km to the 5th transect) is 0.09 ppb and 0.16 ppb, too small to be used for emission estimation. Besides, the enhancements relative to the two sides (mean or linear function) of the 5th transect (downwind) are also smaller than bg uncertainty.
+
+For CH4 emissions from residential areas, the main problem is that the plume from Rotterdam is not isolated with the plume from the agricultural areas north outside Rotterdam. Manually define the range (-10000, -2500) for calculating the enhancements. The residential areas are divided into two areas, 1) the area between the 1st and 2nd (4th) transects, and 2) the area between the 2nd (4th) and 5th transects. 
+
+### **assume mixed well PBL**
+```{r emission estimates for N2O}
+#| eval = FALSE
+
+# set the parameters
+wd <- mean.cir(df$wd)
+ws <- mean(df$ws, na.rm = TRUE) #unit: m/s
+angle <- wd-bearing(c(4.1386, 51.9959), c(4.2709, 51.8569)) 
+
+z <- 1600 #unit: m
+p.dry <- mean((df$Ps*100-df$p.H2O*100), na.rm = TRUE) #unit:Pa
+Tair <- mean(df$Tair) #kelvin
+
+mean(transect1$N2O.ac.ppb[which(transect1$distance<2500)], na.rm = TRUE)
+mean(transect2$N2O.ac.ppb[which(transect2$distance<2500)], na.rm = TRUE)
+mean(transect3$N2O.ac.ppb[which(transect3$distance>(-10000) & transect3$distance<1250)], na.rm = TRUE)
+mean(transect4$N2O.ac.ppb[which(transect4$distance<2500)], na.rm = TRUE)
+mean(transect5$N2O.ac.ppb[which(transect5$distance<2500)], na.rm = TRUE)
+
+#~~~~~~~~~the linear function created by the two sides as downwind bg for 5th transects ~~~~~~~~~~~~~~~~~~~~~~
+lm.5.df <- transect5[which(transect5$distance<(-6500) | transect5$distance>(-1250) & transect5$distance<0), ]
+lm <- lm(N2O.ac.ppb~distance, lm.5.df); summary(lm)
+intercept <- coefficients(lm)[[1]]; slope <- coefficients(lm)[[2]]
+
+bg.frame <- mutate(transect5, bg.transect5 = slope*distance+intercept)
+bg.frame <- mutate(bg.frame, enhancement.transect5 = N2O.ac.ppb-bg.transect5)
+N2O.enhancement <- mean(bg.frame$enhancement.transect5[which(bg.frame$distance>(-6500) & bg.frame$distance<(-1250) )], na.rm = TRUE)
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ the area between the 1st and 5th transects ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+width <- 12500 #unit: m
+bg <- mean(transect1$N2O.ac.ppb[which(transect1$distance>(-10000) & transect1$distance<(1250))], na.rm = TRUE); bg
+N2O.enhancement <- mean((transect5$N2O.ac.ppb[which(transect5$distance>(-10000) & transect5$distance<(1250))]-bg), na.rm = TRUE)
+
+# the uncertainty of parameters
+u.atmospheric.variability <- sd(transect1$N2O.ac.ppb[which(transect1$distance>(-10000) & transect1$distance<2500)], na.rm = TRUE)
+u.bg <- sqrt(u.atmospheric.variability^2+0.1^2)
+u.plume <- 0.1 # the N2O measurement precision: 0.1 ppb
+u.enhancement <- sqrt(u.bg^2+u.plume^2)
+angle.select <- df$wd-bearing(c(4.1386, 51.9959), c(4.2709, 51.8569)) ;
+u.wd <- sd(sin(angle.select*pi/180))/mean(sin(angle.select*pi/180)) # relative uncertainty of wd
+u.width <- 300
+u.pbl <- 100
+
+sqrt(
+  (u.enhancement/N2O.enhancement)^2+(sd(df$ws)/mean(df$ws))^2+(u.wd)^2+(u.pbl/z)^2+(u.width/width)^2
+)
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ the area between the 4TH and 5th transects ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+bg <- mean(transect3$N2O.ac.ppb[which(transect3$distance>(-6500) & transect3$distance<(-1250))], na.rm = TRUE); bg
+
+N2O.enhancement <- mean((transect5$N2O.ac.ppb[which(transect5$distance>(-6500) & transect5$distance<(-1250))]-bg), na.rm = TRUE)
+
+```
+
+```{r surface response fit model}
+library(rsm)
+
+transect1 <- cbind(transect1, spacing = 1)
+transect2 <- cbind(transect2, spacing = 1+sqrt(((lat.zero.2-lat.zero.1)*per.lat)^2+((lon.zero.2-lon.zero.1)*per.lon)^2))
+transect3 <- cbind(transect3, spacing = 1+sqrt(((lat.zero.3-lat.zero.1)*per.lat)^2+((lon.zero.3-lon.zero.1)*per.lon)^2))
+transect4 <- cbind(transect4, spacing = 1+sqrt(((lat.zero.4-lat.zero.1)*per.lat)^2+((lon.zero.4-lon.zero.1)*per.lon)^2))
+transect5 <- cbind(transect5, spacing = 1+sqrt(((lat.zero.5-lat.zero.1)*per.lat)^2+((lon.zero.5-lon.zero.1)*per.lon)^2))
+transect <- rbind(transect1, transect2, transect3, transect4, transect5)
+
+left <- -10000; right <- 0
+n2o.rsm <- rsm(formula = smooth.N2O ~ FO(spacing, distance), data = transect[which(transect$distance>left & transect$distance<right),])
+n2o.rsm <- rsm(formula = smooth.N2O ~ SO(spacing, distance), data = transect[which(transect$distance>left & transect$distance<right),])
+n2o.rsm <- rsm(formula = smooth.N2O ~ FO(spacing, distance)+TWI(spacing, distance), transect[which(transect$distance>left & transect$distance<right),])
+
+n2o.rsm <- rsm(formula = N2O.ac.ppb ~ FO(spacing, distance), data = transect)
+n2o.rsm <- rsm(formula = N2O.ac.ppb ~ SO(spacing, distance), data = transect)
+
+summary(n2o.rsm)
+persp(n2o.rsm, spacing ~ distance, zlab = "smooth.N2O")
+image(n2o.rsm, spacing ~ distance, zlab = "smooth.N2O")
+contour(n2o.rsm, spacing ~ distance, zlab = "smooth.N2O")
+write.table(transect, file=paste0("D:/1 PhD Studies/1 Data/Rotterdam_campaign_2022/0901/N2O.transect.csv"), sep = ",", row.names = FALSE, col.names=TRUE)
+
+```
+
+```{r emission estimates for CH4}
+#| eval = FALSE
+
+# set the parameters
+wd <- mean.cir(df$wd)
+ws <- mean(df$ws, na.rm = TRUE) #unit: m/s
+angle <- wd-bearing(c(4.1386, 51.9959), c(4.2709, 51.8569)) 
+width <- 12500 #unit: m
+
+z <- 1600 #unit: m
+p.dry <- mean((df$Ps*100-df$p.H2O*100), na.rm = TRUE) #unit:Pa
+Tair <- mean(df$Tair) #kelvin
+
+mean(transect1$CH4.ac.ppb[which(transect1$distance>(-10000) & transect1$distance<(-2500))], na.rm = TRUE)
+mean(transect2$CH4.ac.ppb[which(transect2$distance>(-10000) & transect2$distance<(-2500))], na.rm = TRUE)
+mean(transect3$CH4.ac.ppb[which(transect3$distance>(-10000) & transect3$distance<(-2500))], na.rm = TRUE)
+mean(transect4$CH4.ac.ppb[which(transect4$distance>(-10000) & transect4$distance<(-2500))], na.rm = TRUE)
+mean(transect5$CH4.ac.ppb[which(transect5$distance>(-10000) & transect5$distance<(-2500))], na.rm = TRUE)
+
+
+#~~~~~~~~~~~the total residential area between the 1st and 5th transects ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+bg <- mean(transect1$CH4.ac.ppb[which(transect1$distance>(-10000) & transect1$distance<(-2500))], na.rm = TRUE); bg
+CH4.enhancement <- mean((transect5$CH4.ac.ppb[which(transect5$distance>(-10000) & transect5$distance<(-2500))]-bg), na.rm = TRUE)
+
+flux <- print(10^(-9)*CH4.enhancement*p.dry/8.314/Tair*ws*sin(angle*pi/180)*z*width)  #unit: mol/s
+
+# the uncertainty of parameters
+u.atmospheric.variability <- sd(transect1$CH4.ac.ppb[which(transect1$distance>(-10000) & transect1$distance<(-2500))], na.rm = TRUE)
+u.bg <- sqrt(u.atmospheric.variability^2+1^2)
+u.plume <- 1 # the CH4 measurement precision: 1 ppb
+u.enhancement <- sqrt(u.bg^2+u.plume^2)
+angle.select <- df$wd-bearing(c(4.1386, 51.9959), c(4.2709, 51.8569)) ;
+u.wd <- sd(sin(angle.select*pi/180))/mean(sin(angle.select*pi/180)) # relative uncertainty of wd
+u.width <- 2500
+u.pbl <- 100
+
+sqrt(
+  (u.enhancement/CH4.enhancement)^2+(sd(df$ws)/mean(df$ws))^2+(u.wd)^2+(u.pbl/z)^2+(u.width/width)^2
+)
+
+#~~~~~~~~~~~~~~ the area between the 1st and 2nd transects ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+bg <- mean(transect1$CH4.ac.ppb[which(transect1$distance>(-10000) & transect1$distance<(-2500))], na.rm = TRUE); bg
+CH4.enhancement <- mean((transect2$CH4.ac.ppb[which(transect2$distance>(-10000) & transect2$distance<(-2500))]-bg), na.rm = TRUE)
+
+flux <- print(10^(-9)*CH4.enhancement*p.dry/8.314/Tair*ws*sin(angle*pi/180)*z*width)  #unit: mol/s
+
+# the uncertainty of parameters
+u.atmospheric.variability <- sd(transect1$CH4.ac.ppb[which(transect1$distance>(-10000) & transect1$distance<(-2500))], na.rm = TRUE)
+u.bg <- sqrt(u.atmospheric.variability^2+1^2)
+u.plume <- 1 # the CH4 measurement precision: 1 ppb
+u.enhancement <- sqrt(u.bg^2+u.plume^2)
+angle.select <- df$wd-bearing(c(4.1386, 51.9959), c(4.2709, 51.8569)) ;
+u.wd <- sd(sin(angle.select*pi/180))/mean(sin(angle.select*pi/180)) # relative uncertainty of wd
+u.width <- 2500
+u.pbl <- 100
+
+sqrt(
+  (u.enhancement/CH4.enhancement)^2+(sd(df$ws)/mean(df$ws))^2+(u.wd)^2+(u.pbl/z)^2+(u.width/width)^2
+)
+
+
+#~~~~~~~~~~~~~~ the area between the 4th and 5th transects ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+bg <- mean(transect4$CH4.ac.ppb[which(transect4$distance>(-10000) & transect4$distance<(-2500))], na.rm = TRUE); bg
+CH4.enhancement <- mean((transect5$CH4.ac.ppb[which(transect5$distance>(-10000) & transect5$distance<(-2500))]-bg), na.rm = TRUE)
+
+flux <- print(10^(-9)*CH4.enhancement*p.dry/8.314/Tair*ws*sin(angle*pi/180)*z*width)  #unit: mol/s
+
+# the uncertainty of parameters
+u.atmospheric.variability <- sd(transect1$CH4.ac.ppb[which(transect1$distance>(-10000) & transect1$distance<(-2500))], na.rm = TRUE)
+u.bg <- sqrt(u.atmospheric.variability^2+1^2)
+u.plume <- 1 # the CH4 measurement precision: 1 ppb
+u.enhancement <- sqrt(u.bg^2+u.plume^2)
+angle.select <- df$wd-bearing(c(4.1386, 51.9959), c(4.2709, 51.8569)) ;
+u.wd <- sd(sin(angle.select*pi/180))/mean(sin(angle.select*pi/180)) # relative uncertainty of wd
+u.width <- 2500
+u.pbl <- 100
+
+sqrt(
+  (u.enhancement/CH4.enhancement)^2+(sd(df$ws)/mean(df$ws))^2+(u.wd)^2+(u.pbl/z)^2+(u.width/width)^2
+)
+
+
+############get the coordinates of the range for enhancements calculation#################
+left.1 <- transect1[which(round(transect1$distance)==(-9977)), c('lon', 'lat')]; right.1 <- transect1[which(round(transect1$distance)==(-2511)), c('lon', 'lat')]
+left.2 <- transect2[which(round(transect2$distance)==(-9990)), c('lon', 'lat')]; right.2 <- transect2[which(round(transect2$distance)==(-2507)), c('lon', 'lat')]
+left.4 <- transect4[which(round(transect4$distance)==(-9978)), c('lon', 'lat')]; right.4 <- transect4[which(round(transect4$distance)==(-2518)), c('lon', 'lat')]
+left.5 <- transect5[which(round(transect5$distance)==(-9998)), c('lon', 'lat')]; right.5 <- transect5[which(round(transect5$distance)==(-2488)), c('lon', 'lat')]
+
+range <- rbind(left.1, right.1, left.5, right.5); range <- cbind(range, flag = c('left.1', 'right.1', 'left.5', 'right.5'))
+```
+
+\newpage
+## **Harbor emission estimates**
+The first question is that if the harbour should be treated as a point source or a diffuse source? The 6th transect shows that the plume width is around 5 km (the side over the sea does not show stable concentration due to missed values...), and the 1st transect is about around 10 km downwind the emitters located on the Europoort or Maasvlakte area. Based on the spatial scale of the plume width and downwind distance, the harbour emissions are regarded to be from point sources, although in real situations, there could be several emitters. Lavoie et al., estimated emissions from point sources (Gas Processing Plant, Compressor Station, and Landfill) using aircraft-based mass balance method; the downwind distance ranges from 2 km to 4.4 km, and the horizontal distance for which the plume is defined range from 3 km to 7 km. Yu et al., estimated CH4 emission from point sources (animal feeding operations in the region and two sugar processing plants) using aircraft-based mass balance method, and the flight track is a vertically stacked set of circuits (~1 km radius) around each facility extending from as close to the ground as possible through the extent of the plume.
+
+### **assume mixed well PBL**
+```{r emission estimates for N2O}
+#| eval = FALSE
+
+# set the parameters
+wd <- mean.cir(df$wd)
+ws <- mean(df$ws, na.rm = TRUE) #unit: m/s
+angle <- wd-bearing(c(4.1386, 51.9959), c(4.2709, 51.8569)) 
+
+width <- 5300 #unit: m
+z <- 1600 #unit: m
+p.dry <- mean((df$Ps*100-df$p.H2O*100), na.rm = TRUE) #unit:Pa
+Tair <- mean(df$Tair) #kelvin
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~ mean concentration of one side as downwind bg FOR N2O ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# transect6
+bg <- mean(transect6[which( transect6$distance>(-5000) & transect6$distance<0), 'N2O.ac.ppb'], na.rm = TRUE); bg
+bg.frame <- mutate(transect6, enhancement.transect6 = smooth.N2O-bg)
+N2O.enhancement <- mean(bg.frame$enhancement.transect6[which(bg.frame$distance>0 & bg.frame$distance<5000 )], na.rm = TRUE)
+
+flux <- print(10^(-9)*N2O.enhancement*p.dry/8.314/Tair*ws*sin(angle*pi/180)*z*width)  #unit: mol/s
+
+# the uncertainty of parameters
+u.atmospheric.variability <- sd(transect6[which(transect6$distance>(-5000) & transect6$distance<0), 'N2O.ac.ppb'], na.rm = TRUE)
+u.bg <- sqrt(u.atmospheric.variability^2+0.1^2)
+u.plume <- 0.1 # the N2O measurement precision: 0.1 ppb
+u.enhancement <- sqrt(u.bg^2+u.plume^2)
+angle.select <- df$wd-bearing(c(4.1386, 51.9959), c(4.2709, 51.8569)) ;
+u.wd <- sd(sin(angle.select*pi/180))/mean(sin(angle.select*pi/180)) # relative uncertainty of wd
+u.width <- 300
+u.pbl <- 100
+
+sqrt(
+  (u.enhancement/N2O.enhancement)^2+(sd(df$ws)/mean(df$ws))^2+(u.wd)^2+(u.pbl/z)^2+(u.width/width)^2
+)
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~ transect5  as upwind bg FOR N2O ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+bg <- mean(transect5[which(transect5$distance<5000 & transect5$distance>0), 'N2O.ac.ppb'], na.rm = TRUE)
+bg.frame <- mutate(bg.frame, enhancement.transect6 = smooth.N2O-bg)
+N2O.enhancement <- mean(bg.frame$enhancement.transect6[which(bg.frame$distance>0 & bg.frame$distance<5000 )], na.rm = TRUE)
+
+flux <- print(10^(-9)*N2O.enhancement*p.dry/8.314/Tair*ws*sin(angle*pi/180)*z*width)  #unit: mol/s
+
+# the uncertainty of parameters
+u.atmospheric.variability <- sd(transect5[which(transect5$distance<5000 & transect5$distance>0), 'N2O.ac.ppb'], na.rm = TRUE)
+u.bg <- sqrt(u.atmospheric.variability^2+0.1^2)
+u.plume <- 0.1 # the N2O measurement precision: 0.1 ppb
+u.enhancement <- sqrt(u.bg^2+u.plume^2)
+angle.select <- df$wd-bearing(c(4.1386, 51.9959), c(4.2709, 51.8569)) ;
+u.wd <- sd(sin(angle.select*pi/180))/mean(sin(angle.select*pi/180)) # relative uncertainty of wd
+u.width <- 300
+u.pbl <- 100
+
+sqrt(
+  (u.enhancement/N2O.enhancement)^2+(sd(df$ws)/mean(df$ws))^2+(u.wd)^2+(u.pbl/z)^2+(u.width/width)^2
+)
+
+```
+If we use the downwind bg, the N2O enhancements are smaller than the bg uncertainty. This phenomena did not happen for the flight 0906 that has a similar flight pattern as the flight 0901 does. Perhaps the longer distance between downwind trnasect and the emitters on the flight 0901 made the plume peak small? We decide to use upwind bg to estimate the harbour emissions.
+
+The flight 0901 cannot be used to estimate CH4 emissions from either harour or residential areas. The upwind concentration relative to the harbour areas are even higher than the downwind concentrations. That Could be caused by other unstable emissions, since at the same location (4.3~4.4 longitude and 51.85~51.87 latitude), the concentrations of CH4 are different.
+
+
+
+\newpage
+# **summaries**
+
+

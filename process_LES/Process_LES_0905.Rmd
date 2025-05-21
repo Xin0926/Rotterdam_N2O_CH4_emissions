@@ -1,0 +1,597 @@
+---
+title: "2022_0905_LES_data_analysis"
+author: "Xin Tong"
+date: "`r Sys.Date()`"
+output:
+  word_document:
+    toc: yes
+  html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+    code_folding: hide
+  pdf_document:
+    toc: yes
+    number_sections: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.width= 10, fig.height= 8, fig.align = "center")
+library(ggplot2) # package for plotting
+library(RColorBrewer)
+library(ggmap)
+library(ggforce)  # facet_zoom
+library(ggpubr) #stat_regline_equation
+library(gridExtra) #grid.arrange
+library(grid)
+library(gtable) #gtable_filter
+library(ggpmisc)
+library(reshape2)
+library(dplyr)
+library(rWind) # uv2ds     derive the wind speed and direction
+#library(suncalc)  # getsunlighttime
+library(geosphere) # calculate the distance with the input of the latitude and longitude
+library(terra)
+library(ncdf4) # package for netcdf manipulation
+library(ncdf4.helpers) #nc.get.time.series
+library(lubridate)
+library(beepr)
+sapply(list.files(pattern="[.]R$", path="c:/Users/xin/Dropbox/xin/Rscripts/functions", full.names=TRUE), source)
+```
+
+
+\newpage
+# **1. make animation to check the simulatd wind by LES model**
+```{r extract les data at the same altitude}
+
+# load airborne measurements
+flight <- '0905'
+wdir <- "D:/1 phd studies/1 data/Rotterdam_campaign_2022/"
+
+data <- read.csv(paste0(wdir, flight, "/AirCore/AirCore_retrieval/AirCore_N2O_CO_CO2_CH4_CO_2022", flight, ".csv"))
+# data <- mutate(data, p.H2O = H2O/18*8.3145*Tair/100,  #unit:hPa/mbar
+#                pot = Tair*(1000/Ps)^0.286, ws=rWind::uv2ds(U,V)[,2], wd=rWind::uv2ds(U,V)[,1])#;names(data)
+# data <- mutate(data, vir.pot = pot*(1+0.61*p.H2O/1000))
+data <- data.frame(date = ISOdate(data$yyyy, data$mm, data$dd, data$hh, data$min, data$sec, tz='UTC'), data)
+data$date <- round(data$date) # the second is not integer
+# pick up airborne measurements for harbour areas
+data <- data[
+  data$date>as.POSIXlt("2022-09-06 12:24:00", tz='UTC') & data$date<as.POSIXlt("2022-09-06 12:48:00", tz='UTC'),
+  c("date", "lat", "lon", "alt", "N2O.ac.ppb", "CH4.ac.ppb")
+  ]
+names(data)[names(data)=="lat"] <- "lat.ac";
+names(data)[names(data)=="lon"] <- "lon.ac";
+names(data)[names(data)=="alt"] <- "alt.ac"
+
+
+# open the wrfout .nc files
+library(ncdf4) # package for netcdf manipulation
+library(ncdf4.helpers) #nc.get.time.series
+
+filenames <- list.files(path = "F:/Harbour_les/les0905/", pattern = "")
+temp <- unlist(strsplit(filenames, "[_]"))
+
+hr <- temp[seq(4, length(filenames)*6, by = 6)];
+min <- temp[seq(5, length(filenames)*6, by = 6)];
+sec <- temp[seq(6, length(filenames)*6, by = 6)];
+time <- paste0(hr, "_", min, "_", sec)
+
+list <- list()
+for(i in 1:length(time)) {
+  dat.nc <- nc_open(paste0("F:/Harbour_les/les0905/wrfout_d03_2022-09-06_", time[i]))
+
+  #plume <- ncvar_get(dat.nc, "PLUME")  # the unit is kg N2O/kg Air
+  lat <- ncvar_get(dat.nc, "XLAT")
+  lon <- ncvar_get(dat.nc, "XLONG")
+  U <- ncvar_get(dat.nc, "U")
+  V <- ncvar_get(dat.nc, "V")
+  W <- ncvar_get(dat.nc, "W")
+
+  ph <- ncvar_get(dat.nc, "PH")
+  phb <- ncvar_get(dat.nc, "PHB")
+  hgt <- ncvar_get(dat.nc, "HGT")
+
+  nc_close(nc=dat.nc)
+  
+  # height (a.g.l) = geospatial height/9.81-terrain height
+  array1 <- (ph+phb)/9.81
+  array2 <- array(hgt, dim = c(ncol(hgt), nrow(hgt), dim(array1)[3]))
+  array3 <- array1-array2
+  
+  # the range of the altitude and latitude/longitude of each airborne flight
+  lower <- min(data$alt.ac, na.rm = TRUE);
+  upper <- max(data$alt.ac, na.rm = TRUE)
+  
+  # correspond to the airborne measurements height (above the ground level)
+  index <- which(array3>lower & array3<upper, arr.ind = TRUE)
+  #layers <- unique(index[,3])
+  layers <- min(index[,3])
+
+  # PICK UP THE layers of LES data and convert it into a dataframe
+  df <- data.frame(
+      date = as.POSIXct(paste0("2022-09-06 ", hr[i], ":", min[i], ":", sec[i]), tz = "UTC"),
+      lat = as.vector(lat),
+      lon = as.vector(lon),
+      alt = as.vector(array3[,,layers]),
+      U = as.vector(U[1:836, 1:836, layers]),
+      V = as.vector(V[1:836, 1:836, layers])
+
+      #N2O = as.vector(plume[,,layers])*28.96/44*10^9,  # convert the unit of kg N2O/ kg Air to the unit of ppb
+      #CH4 = as.vector(plume[,,layers])*28.96/16*10^9  # convert the unit of kg CH4/ kg Air to the unit of ppb
+      )
+  list[[i]] <- df
+}
+setwd("D:/1 PhD Studies/1 Data/LES/0905/wind")
+save(list, file = "layer_25_wind.RData")
+
+# save data into a dataframe
+#write.table(les.value, "D:/1 PhD Studies/1 Data/LES/2022_09_06_LES_corresponding_to_aircore_measurements.csv", sep = ",", row.names = FALSE, col.names=TRUE)
+```
+
+```{r make animation of wind}
+
+# setwd("D:/1 PhD Studies/1 Data/LES/0905/wind")
+load("layer_25_wind.RData")
+
+library(gganimate)
+library(gifski)
+library(data.table)
+library(viridis)
+
+df <- data.table::rbindlist(list[1:5]);
+df <- mutate(df, ws=rWind::uv2ds(U,V)[,2], wd=rWind::uv2ds(U,V)[,1])
+
+unique <- unique(df$date)
+df.1 <- df[df$date==unique[1],]
+
+p <- ggplot(df, mapping = aes(x = lon, y = lat, group = date, fill = ws))+
+  geom_tile(width = 0.000458, height = 0.00027)+
+  scale_fill_viridis()+
+  labs(title = "wind speed", x = "longitude", y = "latitude", fill = "ws [m/s]")
+
+# Animate the plot over the Month variable
+p_anim <- p + transition_time(date) +
+  labs(title = "time")
+
+# Save the animation as a GIF
+anim_save("layer_25_ws.gif", animation = p_anim)
+```
+The rscript runs very slowly. It took me about 1.5 hours to combine five time stamps into one animation. 
+
+
+
+\newpage
+# **2. load the mast measurements**
+```{r}
+
+###### information ######
+# Latitude: 51.9629833°N
+# Longitude: 4.0053389°E
+# the height is above the ground level
+
+mast <- read.csv("D:/1 PhD Studies/1 Data/LES/met_mast_Rotterdam.csv", skip =1, sep = ";"); 
+datetime <- lubridate::ymd_hms(mast[-1, 1])
+mast <- data.frame(apply(mast[-1, -1], 2, as.numeric), datetime); str(mast)
+
+
+# melt <- melt(mast, id.vars = "datetime", measure.vars = c("MMX_H135_Ws_Q1_avg", "MMX_H130B160_Ws_Q1_avg", "MMX_H080B160_Ws_Q1_avg", "MMX_H025B160_Ws_Q1_avg", "MMX_H025B340_Ws_Q1_avg"))
+# 
+# melt <- melt(mast, id.vars = "datetime", measure.vars = c("MMX_H126_RH_Q1_avg", "MMX_H021_RH_Q1_avg"))
+# 
+# melt <- melt(mast, id.vars = "datetime", measure.vars = c("MMX_H126_Temp_Q1_avg", "MMX_H021_Temp_Q1_avg"))
+# 
+# ggplot(mast, mapping = aes(x = datetime, y = MMX_H126_Pair_Q1_avg))+geom_point()
+
+melt <- melt(mast, id.vars = "datetime", measure.vars = c("MMX_H126B340_Wd_Q1_avg", "MMX_H126B160_Wd_Q1_avg", "MMX_H080B340_Wd_Q1_avg", "MMX_H021B160_Wd_Q1_avg"))
+
+pdf("D:/1 PhD Studies/1 Data/LES/0905/plots/mast.data.pdf")
+time <- seq(as.POSIXct("2022-09-03 00:00:00", tz = "UTC"), as.POSIXct("2022-09-06 24:00:00", tz = "UTC"), by = "1 day")
+for(i in 1:4) {
+  sel <- melt[melt$datetime>time[i] & melt$datetime<time[i+1], ]
+  p <- ggplot(melt, mapping = aes(x = datetime, y = value, group = variable, colour = variable))+geom_point()
+  print(p)
+}
+while (!is.null(dev.list()))  dev.off()
+
+```
+
+
+# **3. comparison with mast measurements**
+## **select LES grids for comparison with mast measurements**
+```{r for wind measurements}
+
+
+filenames <- list.files(path = "F:/Harbour_les/les0905/", pattern = "")
+temp <- unlist(strsplit(filenames, "[_]"))
+
+hr <- temp[seq(4, length(filenames)*6, by = 6)];
+min <- temp[seq(5, length(filenames)*6, by = 6)];
+sec <- temp[seq(6, length(filenames)*6, by = 6)];
+
+time <- paste0(hr, "_", min, "_", sec)
+
+# Preallocate the list
+list <- vector("list", length(time))
+
+# Open the first file to get the necessary data
+dat.nc <- nc_open(paste0("F:/Harbour_les/les0905/wrfout_d03_2022-09-05_", time[1]))
+
+# Extract coordinates only once
+lat <- ncvar_get(dat.nc, "XLAT")
+lon <- ncvar_get(dat.nc, "XLONG")
+
+# Find the closest coordinate only once
+matrix <- cbind(lon = as.vector(lon), lat = as.vector(lat))
+distances <- distance(matrix, t(c(4.0053389, 51.9629833)), lonlat = TRUE) # pick up the les grids for the layers 1:12 closest to the location of the mast (Latitude: 51.9629833°N Longitude: 4.0053389°E)!!!
+closest_coordinate <- matrix[which.min(distances), ]
+index.lon <- unique(which(lon == closest_coordinate[[1]], arr.ind = TRUE)[, 1])
+index.lat <- unique(which(lat == closest_coordinate[[2]], arr.ind = TRUE)[, 2])
+
+rm(lon, lat, matrix, distances)
+
+# Close the initial file
+nc_close(dat.nc)
+
+for(i in seq.int(time)) {
+  dat.nc <- nc_open(paste0("F:/Harbour_les/les0905/wrfout_d03_2022-09-05_", time[i]))
+
+  U <- ncvar_get(dat.nc, "U")
+  V <- ncvar_get(dat.nc, "V")
+
+  ph <- ncvar_get(dat.nc, "PH")
+  phb <- ncvar_get(dat.nc, "PHB")
+  hgt <- ncvar_get(dat.nc, "HGT")
+
+  ###################
+  nc_close(nc=dat.nc)
+  ###################
+  
+  # linearly Interpolating U component (shifted by half a grid cell in the x-direction)
+  U_interpolated <- 0.5 * (U[1:(dim(U)[1] - 1), , ] + U[2:dim(U)[1], , ])
+
+  # linearly Interpolating V component (shifted by half a grid cell in the y-direction (lat))
+  V_interpolated <- 0.5 * (V[, 1:(dim(V)[2] - 1), ] + V[, 2:dim(V)[2], ])
+
+  rm(dat.nc, U, V)
+  
+  # height (a.g.l) = geospatial height/9.81-terrain height
+  array1 <- (ph+phb)/9.81
+  array2 <- array(hgt, dim = c(ncol(hgt), nrow(hgt), dim(array1)[3]))
+  array3 <- array1-array2
+
+  rm(ph, phb, hgt, array1, array2)
+  
+  # linearly Interpolating height (a.g.l) (shifted by half a grid cell in the z-direction (alt))
+  alt_interpolated <- 0.5 * (array3[, , 1:(dim(array3)[3]-1)] + array3[, , 2:dim(array3)[3]])
+
+  # remove unuseful objects from environments
+  rm(array3)
+  
+  df <- data.frame(
+      datetime = as.POSIXct(paste0("2022-09-05 ", hr[i], ":", min[i], ":", sec[i]), tz = "UTC"),
+      lon = closest_coordinate[[1]], 
+      lat = closest_coordinate[[2]], 
+      U = U_interpolated[index.lon, index.lat, 1:12],
+      V = V_interpolated[index.lon, index.lat, 1:12],
+      alt = alt_interpolated[index.lon, index.lat, 1:12]
+    )
+  list[[i]] <- df
+  
+  # remove unuseful objects from environments
+  rm(U_interpolated, V_interpolated, alt_interpolated)
+  
+}
+df <- do.call(rbind, list)
+write.csv(df, "D:/1 PhD Studies/1 Data/LES/0905/extract_les/wind.vertical.profile.csv")
+
+```
+
+```{r for pressure and temperature}
+
+
+filenames <- list.files(path = "F:/Harbour_les/les0905/", pattern = "")
+temp <- unlist(strsplit(filenames, "[_]"))
+
+hr <- temp[seq(4, length(filenames)*6, by = 6)];
+min <- temp[seq(5, length(filenames)*6, by = 6)];
+sec <- temp[seq(6, length(filenames)*6, by = 6)];
+
+time <- paste0(hr, "_", min, "_", sec)
+
+# Preallocate the list
+list <- vector("list", length(time))
+
+# Open the first file to get the necessary data
+dat.nc <- nc_open(paste0("F:/Harbour_les/les0905/wrfout_d03_2022-09-05_", time[1]))
+
+# Extract coordinates only once
+lat <- ncvar_get(dat.nc, "XLAT")
+lon <- ncvar_get(dat.nc, "XLONG")
+
+# Find the closest coordinate only once
+matrix <- cbind(lon = as.vector(lon), lat = as.vector(lat))
+distances <- distance(matrix, t(c(4.0053389, 51.9629833)), lonlat = TRUE) # pick up the les grids for the layers 1:12 closest to the location of the mast (Latitude: 51.9629833°N Longitude: 4.0053389°E)!!!
+closest_coordinate <- matrix[which.min(distances), ]
+index.lon <- unique(which(lon == closest_coordinate[[1]], arr.ind = TRUE)[, 1])
+index.lat <- unique(which(lat == closest_coordinate[[2]], arr.ind = TRUE)[, 2])
+
+rm(lon, lat, matrix, distances)
+
+# Close the initial file
+nc_close(dat.nc)
+
+for(i in seq.int(time)) {
+  dat.nc <- nc_open(paste0("F:/Harbour_les/les0905/wrfout_d03_2022-09-05_", time[i]))
+
+  t <- ncvar_get(dat.nc, "T") # unit:K
+  p <- ncvar_get(dat.nc, "P") # unit: Pa
+  pb <- ncvar_get(dat.nc, "PB") # unit: Pa
+  vapor <- ncvar_get(dat.nc, "QVAPOR") # unit: Kg Kg-1
+
+  ph <- ncvar_get(dat.nc, "PH")
+  phb <- ncvar_get(dat.nc, "PHB")
+  hgt <- ncvar_get(dat.nc, "HGT")
+
+  ###################
+  nc_close(nc=dat.nc)
+  ###################
+  
+  # height (a.g.l) = geospatial height/9.81-terrain height
+  array3 <- (ph+phb)/9.81-array(hgt, dim = c(ncol(hgt), nrow(hgt), 141))
+
+  rm(ph, phb, hgt, dat.nc)
+  
+  # linearly Interpolating height (a.g.l) (shifted by half a grid cell in the z-direction (alt))
+  alt_interpolated <- 0.5 * (array3[, , 1:(dim(array3)[3]-1)] + array3[, , 2:dim(array3)[3]])
+
+  # remove unuseful objects from environments
+  rm(array3)
+  
+  df <- data.frame(
+      datetime = as.POSIXct(paste0("2022-09-05 ", hr[i], ":", min[i], ":", sec[i]), tz = "UTC"),
+      lon = closest_coordinate[[1]], 
+      lat = closest_coordinate[[2]], 
+      alt = alt_interpolated[index.lon, index.lat, 1:12],
+      t = t[index.lon, index.lat, 1:12],
+      p = p[index.lon, index.lat, 1:12],
+      pb = pb[index.lon, index.lat, 1:12],
+      vapor = vapor[index.lon, index.lat, 1:12]
+    )
+  list[[i]] <- df
+  
+  # remove unuseful objects from environments
+  rm(df, t, p, pb, vapor, alt_interpolated)
+  
+}
+df <- do.call(rbind, list)
+write.csv(df, "D:/1 PhD Studies/1 Data/LES/0905/extract_les/meteo.vertical.profile.csv")
+
+
+```
+
+## **vertical profiles for comparison between LES & mast measurements**
+```{r visualize vertical profiles of wind}
+
+
+mast <- read.csv("D:/1 PhD Studies/1 Data/LES/met_mast_Rotterdam.csv", skip =1, sep = ";"); 
+datetime <- lubridate::ymd_hms(mast[-1, 1])
+mast <- data.frame(apply(mast[-1, -1], 2, as.numeric), datetime)
+mast <- mast[mast$datetime>=as.POSIXct("2022-09-05 12:50:00", tz = "UTC") & mast$datetime<=as.POSIXct("2022-09-05 13:26:00", tz = "UTC"),]
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# for the comparison of ws
+melt <- melt(mast, id.vars = "datetime", measure.vars = c("MMX_H135_Ws_Q1_avg", "MMX_H130B160_Ws_Q1_avg", "MMX_H080B160_Ws_Q1_avg", "MMX_H025B160_Ws_Q1_avg", "MMX_H025B340_Ws_Q1_avg"))
+
+alt.character <- apply(melt, 1, function(row){
+  strsplit(as.character(row["variable"]), "_")[[1]][2]
+})
+
+melt <- cbind(melt, alt.character)
+
+# select the same measurement height with different boom directions
+lowest.level <- c("H025B160", "H025B340")
+melt <- melt[melt$alt.character!=lowest.level[1], ]
+
+alt.num <- apply(melt, 1, function(row){
+  as.numeric(substr(row["alt.character"], start = 2, stop = 4))
+})
+
+melt <- cbind(melt, alt.num)
+
+melt$datetime <- as.character(melt$datetime)
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# for the comparison of wd
+melt <- melt(mast, id.vars = "datetime", measure.vars = c("MMX_H126B340_Wd_Q1_avg", "MMX_H126B160_Wd_Q1_avg", "MMX_H080B340_Wd_Q1_avg", "MMX_H021B160_Wd_Q1_avg")) # wd indicates where wd come from
+alt.character <- apply(melt, 1, function(row){
+  strsplit(as.character(row["variable"]), "_")[[1]][2]
+})
+
+melt <- cbind(melt, alt.character)
+
+# select the same measurement height with different boom directions
+lowest.level <- c("H126B340", "H126B160")
+melt <- melt[melt$alt.character!=lowest.level[2], ]
+
+alt.num <- apply(melt, 1, function(row){
+  as.numeric(substr(row["alt.character"], start = 2, stop = 4))
+})
+
+melt <- cbind(melt, alt.num)
+
+melt$datetime <- as.character(melt$datetime)
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+
+les <- read.csv("D:/1 PhD Studies/1 Data/LES/0905/extract_les/wind.vertical.profile.csv")
+les <- mutate(les, ws=rWind::uv2ds(U,V)[,2], wd=rWind::uv2ds(U,V)[,1])#;names(data)
+les <- mutate(les, wd.1 = case_when(
+  wd-180>0 ~ wd-180,
+  wd-180<0 ~ wd-180+360)) # convert the degree to the number that indicates where wd come from
+
+
+#pdf("D:/1 PhD Studies/1 Data/LES/0905/plots/mast&les.wind.pdf")
+tiff(paste0("D:/1 PhD Studies/1 Data/LES/0905/plots/mast&les.wd.", lowest.level[1], ".tiff"), units="mm", width=300, height=200, res=300)
+ggplot()+
+  geom_point(les, mapping = aes(x = wd.1, y = alt, group = datetime, colour = datetime))+
+  geom_path(les, mapping = aes(x = wd.1, y = alt, group = datetime, colour = datetime))+
+  scale_color_viridis_d(option = "D") + # First color scale
+  labs(colour = "LES")+
+
+  # Indicate a new color scale
+  ggnewscale::new_scale_color() +
+  geom_point(melt, mapping = aes(x = value, y = alt.num, group = datetime, colour = datetime))+
+  geom_path(melt, mapping = aes(x = value, y = alt.num, group = datetime, colour = datetime))+
+  scale_color_viridis_d(option = "B")+
+  labs(colour = "mast.measure")+
+  ggtitle(lowest.level[1])
+
+while (!is.null(dev.list()))  dev.off()
+
+
+
+
+distHaversine(c(4.0053389, 51.9629833), c(les$lon[1], les$lat[1]))
+distVincentySphere(c(4.0053389, 51.9629833), c(les$lon[1], les$lat[1]))
+distGeo(c(4.0053389, 51.9629833), c(les$lon[1], les$lat[1]))
+```
+
+The ws measured at the lowest height level of 25 m mounted at the direction of 160 is only a bit larger (0.1-0.3 m/s) than that measured at 340 degree. Can be ignored in my case.
+The wd measured at 126 m by the cup anemometer mounted at the direction of 160 deg has a bias of ~5 deg than that mounted at 340 deg.
+The distance between the location of mast and les is around 13 m.
+
+```{r visualize vertical profiles of pressure and temperature}
+
+les <- read.csv("D:/1 PhD Studies/1 Data/LES/0905/extract_les/meteo.vertical.profile.csv")
+p.total <- (les$p+les$pb)/100 # hpa
+pot <- les$t+300 # kelvin
+tair <- pot*(p.total/1000)^0.286 # kelvin
+e = les$vapor*p.total/(0.622+les$vapor) # hpa
+es <- 6.11*10^(2.5*10^6/461.52*(1/273.15-1/tair)) # hpa; Clausius-Clapeyron relation.
+es.1 <- 6.1078*10^(17.2693882*(tair-273.16)/(tair-35.86)) # the equation proposed by Murray (1967)
+RH <- e/es*100
+les <- cbind(les, p.total, pot, tair, e, es, es.1, RH) # temp and pot.temp are in kelvin
+
+
+
+mast <- read.csv("D:/1 PhD Studies/1 Data/LES/met_mast_Rotterdam.csv", skip =1, sep = ";"); 
+datetime <- lubridate::ymd_hms(mast[-1, 1])
+mast <- data.frame(apply(mast[-1, -1], 2, as.numeric), datetime)
+mast <- mast[mast$datetime>=as.POSIXct("2022-09-06 12:16:00", tz = "UTC") & mast$datetime<=as.POSIXct("2022-09-06 12:56:00", tz = "UTC"),]
+# calculate potential temperature in degree
+mast <- mutate(mast,
+               pot.126 = (MMX_H126_Temp_Q1_avg+273.15)*(1000/MMX_H126_Pair_Q1_avg)^0.286,
+               pot.21 = (MMX_H021_Temp_Q1_avg+273.15)*(1000/(MMX_H126_Pair_Q1_avg+13))^0.286) 
+mast$pot.126 <- mast$pot.126-273.15;
+mast$pot.21 <- mast$pot.21-273.15
+
+
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# for the comparison of RH and temperature
+pdf("D:/1 PhD Studies/1 Data/LES/0905/plots/mast&les.meteo.pdf")
+
+########################
+# plot relative humidity
+########################
+
+  melt <- melt(mast, id.vars = "datetime", measure.vars = c("MMX_H126_RH_Q1_avg", "MMX_H021_RH_Q1_avg"))
+  alt.character <- apply(melt, 1, function(row){
+  strsplit(as.character(row["variable"]), "_")[[1]][2]
+})
+  melt <- cbind(melt, alt.character)
+  alt.num <- apply(melt, 1, function(row){
+  as.numeric(substr(row["alt.character"], start = 2, stop = 4))
+})
+  melt <- cbind(melt, alt.num)
+  melt$datetime <- as.character(melt$datetime)
+
+ggplot()+
+  geom_point(les, mapping = aes(x = RH, y = alt, group = datetime, colour = datetime))+
+  geom_path(les, mapping = aes(x = RH, y = alt, group = datetime, colour = datetime))+
+  scale_color_viridis_d(option = "D") + # First color scale
+  labs(colour = "LES")+
+
+  # Indicate a new color scale
+  ggnewscale::new_scale_color() +
+  geom_point(melt, mapping = aes(x = value, y = alt.num, group = datetime, colour = datetime))+
+  geom_path(melt, mapping = aes(x = value, y = alt.num, group = datetime, colour = datetime))+
+  scale_color_viridis_d(option = "B")+
+  labs(colour = "mast.measure", x = "relative humidity [%]")
+
+########################
+# plot temperature
+########################
+
+  melt <- melt(mast, id.vars = "datetime", measure.vars = c("MMX_H126_Temp_Q1_avg", "MMX_H021_Temp_Q1_avg"))
+  alt.character <- apply(melt, 1, function(row){
+  strsplit(as.character(row["variable"]), "_")[[1]][2]
+})
+  melt <- cbind(melt, alt.character)
+  alt.num <- apply(melt, 1, function(row){
+  as.numeric(substr(row["alt.character"], start = 2, stop = 4))
+})
+  melt <- cbind(melt, alt.num)
+  melt$datetime <- as.character(melt$datetime)
+
+ggplot()+
+  geom_point(les, mapping = aes(x = tair-273.15, y = alt, group = datetime, colour = datetime))+
+  geom_path(les, mapping = aes(x = tair-273.15, y = alt, group = datetime, colour = datetime))+
+  scale_color_viridis_d(option = "D") + # First color scale
+  labs(colour = "LES")+
+
+  # Indicate a new color scale
+  ggnewscale::new_scale_color() +
+  geom_point(melt, mapping = aes(x = value, y = alt.num, group = datetime, colour = datetime))+
+  geom_path(melt, mapping = aes(x = value, y = alt.num, group = datetime, colour = datetime))+
+  scale_color_viridis_d(option = "B")+
+  labs(colour = "mast.measure", x = "temp [deg]")
+
+
+########################
+# plot potential temperature
+########################
+
+  melt <- melt(mast, id.vars = "datetime", measure.vars = c("pot.126", "pot.21"))
+  alt.num <- apply(melt, 1, function(row){
+  as.numeric(substr(row["variable"], start = 5, stop = 7))
+})
+  melt <- cbind(melt, alt.num)
+  melt$datetime <- as.character(melt$datetime)
+
+ggplot()+
+  geom_point(les, mapping = aes(x = pot-273.15, y = alt, group = datetime, colour = datetime))+
+  geom_path(les, mapping = aes(x = pot-273.15, y = alt, group = datetime, colour = datetime))+
+  scale_color_viridis_d(option = "D") + # First color scale
+  labs(colour = "LES")+
+
+  # Indicate a new color scale
+  ggnewscale::new_scale_color() +
+  geom_point(melt, mapping = aes(x = value, y = alt.num, group = datetime, colour = datetime))+
+  geom_path(melt, mapping = aes(x = value, y = alt.num, group = datetime, colour = datetime))+
+  scale_color_viridis_d(option = "B")+
+  labs(colour = "mast.measure", x = "potential temp [deg]")
+
+while (!is.null(dev.list()))  dev.off()
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+
+
+
+distHaversine(c(4.0053389, 51.9629833), c(les$lon[1], les$lat[1]))
+distVincentySphere(c(4.0053389, 51.9629833), c(les$lon[1], les$lat[1]))
+distGeo(c(4.0053389, 51.9629833), c(les$lon[1], les$lat[1]))
+```
+
+
+
+
+\newpage

@@ -1,0 +1,2215 @@
+---
+title: "2022_0901_LES_data_analysis"
+author: "Xin Tong"
+date: "`r Sys.Date()`"
+output:
+  word_document:
+    toc: yes
+  html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+    code_folding: hide
+  pdf_document:
+    toc: yes
+    number_sections: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.width= 10, fig.height= 8, fig.align = "center")
+library(ggplot2) # package for plotting
+library(RColorBrewer)
+library(ggmap)
+library(ggforce)  # facet_zoom
+library(ggpubr) #stat_regline_equation
+library(gridExtra) #grid.arrange
+library(grid)
+library(gtable) #gtable_filter
+library(ggpmisc)
+library(reshape2)
+library(dplyr)
+library(rWind) # uv2ds     derive the wind speed and direction
+#library(suncalc)  # getsunlighttime
+library(geosphere) # calculate the distance with the input of the latitude and longitude
+library(terra)
+library(ncdf4) # package for netcdf manipulation
+library(ncdf4.helpers) #nc.get.time.series
+library(lubridate)
+library(beepr)
+sapply(list.files(pattern="[.]R$", path="c:/Users/xin/Dropbox/xin/Rscripts/functions", full.names=TRUE), source)
+```
+
+
+\newpage
+# **1. make animation to check the simulatd wind by LES model**
+```{r extract les data at the same altitude}
+
+# load airborne measurements
+flight <- '0901'
+wdir <- "D:/1 phd studies/1 data/Rotterdam_campaign_2022/"
+
+data <- read.csv(paste0(wdir, flight, "/AirCore/AirCore_retrieval/AirCore_N2O_CO_CO2_CH4_CO_2022", flight, ".csv"))
+# data <- mutate(data, p.H2O = H2O/18*8.3145*Tair/100,  #unit:hPa/mbar
+#                pot = Tair*(1000/Ps)^0.286, ws=rWind::uv2ds(U,V)[,2], wd=rWind::uv2ds(U,V)[,1])#;names(data)
+# data <- mutate(data, vir.pot = pot*(1+0.61*p.H2O/1000))
+data <- data.frame(date = ISOdate(data$yyyy, data$mm, data$dd, data$hh, data$min, data$sec, tz='UTC'), data)
+data$date <- round(data$date) # the second is not integer
+# pick up airborne measurements for harbour areas
+data <- data[
+  data$date>as.POSIXlt("2022-09-06 12:24:00", tz='UTC') & data$date<as.POSIXlt("2022-09-06 12:48:00", tz='UTC'),
+  c("date", "lat", "lon", "alt", "N2O.ac.ppb", "CH4.ac.ppb")
+  ]
+names(data)[names(data)=="lat"] <- "lat.ac";
+names(data)[names(data)=="lon"] <- "lon.ac";
+names(data)[names(data)=="alt"] <- "alt.ac"
+
+
+# open the wrfout .nc files
+library(ncdf4) # package for netcdf manipulation
+library(ncdf4.helpers) #nc.get.time.series
+
+filenames <- list.files(path = "F:/Harbour_les/les0901/", pattern = "")
+temp <- unlist(strsplit(filenames, "[_]"))
+
+hr <- temp[seq(4, length(filenames)*6, by = 6)];
+min <- temp[seq(5, length(filenames)*6, by = 6)];
+sec <- temp[seq(6, length(filenames)*6, by = 6)];
+time <- paste0(hr, "_", min, "_", sec)
+
+list <- list()
+for(i in 1:length(time)) {
+  dat.nc <- nc_open(paste0("F:/Harbour_les/les0901/wrfout_d03_2022-09-06_", time[i]))
+
+  #plume <- ncvar_get(dat.nc, "PLUME")  # the unit is kg N2O/kg Air
+  lat <- ncvar_get(dat.nc, "XLAT")
+  lon <- ncvar_get(dat.nc, "XLONG")
+  U <- ncvar_get(dat.nc, "U")
+  V <- ncvar_get(dat.nc, "V")
+  W <- ncvar_get(dat.nc, "W")
+
+  ph <- ncvar_get(dat.nc, "PH")
+  phb <- ncvar_get(dat.nc, "PHB")
+  hgt <- ncvar_get(dat.nc, "HGT")
+
+  nc_close(nc=dat.nc)
+  
+  # height (a.g.l) = geospatial height/9.81-terrain height
+  array1 <- (ph+phb)/9.81
+  array2 <- array(hgt, dim = c(ncol(hgt), nrow(hgt), dim(array1)[3]))
+  array3 <- array1-array2
+  
+  # the range of the altitude and latitude/longitude of each airborne flight
+  lower <- min(data$alt.ac, na.rm = TRUE);
+  upper <- max(data$alt.ac, na.rm = TRUE)
+  
+  # correspond to the airborne measurements height (above the ground level)
+  index <- which(array3>lower & array3<upper, arr.ind = TRUE)
+  #layers <- unique(index[,3])
+  layers <- min(index[,3])
+
+  # PICK UP THE layers of LES data and convert it into a dataframe
+  df <- data.frame(
+      date = as.POSIXct(paste0("2022-09-06 ", hr[i], ":", min[i], ":", sec[i]), tz = "UTC"),
+      lat = as.vector(lat),
+      lon = as.vector(lon),
+      alt = as.vector(array3[,,layers]),
+      U = as.vector(U[1:836, 1:836, layers]),
+      V = as.vector(V[1:836, 1:836, layers])
+
+      #N2O = as.vector(plume[,,layers])*28.96/44*10^9,  # convert the unit of kg N2O/ kg Air to the unit of ppb
+      #CH4 = as.vector(plume[,,layers])*28.96/16*10^9  # convert the unit of kg CH4/ kg Air to the unit of ppb
+      )
+  list[[i]] <- df
+}
+setwd("D:/1 PhD Studies/1 Data/LES/0901/wind")
+save(list, file = "layer_25_wind.RData")
+
+# save data into a dataframe
+#write.table(les.value, "D:/1 PhD Studies/1 Data/LES/2022_09_06_LES_corresponding_to_aircore_measurements.csv", sep = ",", row.names = FALSE, col.names=TRUE)
+```
+
+```{r make animation of wind}
+
+# setwd("D:/1 PhD Studies/1 Data/LES/0901/wind")
+load("layer_25_wind.RData")
+
+library(gganimate)
+library(gifski)
+library(data.table)
+library(viridis)
+
+df <- data.table::rbindlist(list[1:5]);
+df <- mutate(df, ws=rWind::uv2ds(U,V)[,2], wd=rWind::uv2ds(U,V)[,1])
+
+unique <- unique(df$date)
+df.1 <- df[df$date==unique[1],]
+
+p <- ggplot(df, mapping = aes(x = lon, y = lat, group = date, fill = ws))+
+  geom_tile(width = 0.000458, height = 0.00027)+
+  scale_fill_viridis()+
+  labs(title = "wind speed", x = "longitude", y = "latitude", fill = "ws [m/s]")
+
+# Animate the plot over the Month variable
+p_anim <- p + transition_time(date) +
+  labs(title = "time")
+
+# Save the animation as a GIF
+anim_save("layer_25_ws.gif", animation = p_anim)
+```
+The rscript runs very slowly. It took me about 1.5 hours to combine five time stamps into one animation. 
+
+
+
+\newpage
+# **2. load the mast measurements**
+```{r}
+
+###### information ######
+# Latitude: 51.9629833°N
+# Longitude: 4.0053389°E
+# the height is above the ground level
+
+mast <- read.csv("D:/1 PhD Studies/1 Data/LES/met_mast_Rotterdam.csv", skip =1, sep = ";"); 
+datetime <- lubridate::ymd_hms(mast[-1, 1])
+mast <- data.frame(apply(mast[-1, -1], 2, as.numeric), datetime); str(mast)
+
+
+# melt <- melt(mast, id.vars = "datetime", measure.vars = c("MMX_H135_Ws_Q1_avg", "MMX_H130B160_Ws_Q1_avg", "MMX_H080B160_Ws_Q1_avg", "MMX_H025B160_Ws_Q1_avg", "MMX_H025B340_Ws_Q1_avg"))
+# 
+# melt <- melt(mast, id.vars = "datetime", measure.vars = c("MMX_H126_RH_Q1_avg", "MMX_H021_RH_Q1_avg"))
+# 
+# melt <- melt(mast, id.vars = "datetime", measure.vars = c("MMX_H126_Temp_Q1_avg", "MMX_H021_Temp_Q1_avg"))
+# 
+# ggplot(mast, mapping = aes(x = datetime, y = MMX_H126_Pair_Q1_avg))+geom_point()
+
+melt <- melt(mast, id.vars = "datetime", measure.vars = c("MMX_H126B340_Wd_Q1_avg", "MMX_H126B160_Wd_Q1_avg", "MMX_H080B340_Wd_Q1_avg", "MMX_H021B160_Wd_Q1_avg"))
+
+pdf("D:/1 PhD Studies/1 Data/LES/0901/plots/mast.data.pdf")
+time <- seq(as.POSIXct("2022-09-03 00:00:00", tz = "UTC"), as.POSIXct("2022-09-06 24:00:00", tz = "UTC"), by = "1 day")
+for(i in 1:4) {
+  sel <- melt[melt$datetime>time[i] & melt$datetime<time[i+1], ]
+  p <- ggplot(melt, mapping = aes(x = datetime, y = value, group = variable, colour = variable))+geom_point()
+  print(p)
+}
+while (!is.null(dev.list()))  dev.off()
+
+```
+
+
+# **3. comparison with mast measurements**
+## **select LES grids for comparison with mast measurements**
+```{r for wind measurements}
+
+
+filenames <- list.files(path = "F:/Harbour_les/les0901/", pattern = "")
+temp <- unlist(strsplit(filenames, "[_]"))
+
+hr <- temp[seq(4, length(filenames)*6, by = 6)];
+min <- temp[seq(5, length(filenames)*6, by = 6)];
+sec <- temp[seq(6, length(filenames)*6, by = 6)];
+
+time <- paste0(hr, "_", min, "_", sec)
+
+# Preallocate the list
+list <- vector("list", length(time))
+
+# Open the first file to get the necessary data
+dat.nc <- nc_open(paste0("F:/Harbour_les/les0901/wrfout_d03_2022-09-01_", time[1]))
+
+# Extract coordinates only once
+lat <- ncvar_get(dat.nc, "XLAT")
+lon <- ncvar_get(dat.nc, "XLONG")
+
+# Find the closest coordinate only once
+matrix <- cbind(lon = as.vector(lon), lat = as.vector(lat))
+distances <- distance(matrix, t(c(4.0053389, 51.9629833)), lonlat = TRUE) # pick up the les grids for the layers 1:12 closest to the location of the mast (Latitude: 51.9629833°N Longitude: 4.0053389°E)!!!
+closest_coordinate <- matrix[which.min(distances), ]
+index.lon <- unique(which(lon == closest_coordinate[[1]], arr.ind = TRUE)[, 1])
+index.lat <- unique(which(lat == closest_coordinate[[2]], arr.ind = TRUE)[, 2])
+
+rm(lon, lat, matrix, distances)
+
+# Close the initial file
+nc_close(dat.nc)
+
+for(i in seq.int(time)) {
+  dat.nc <- nc_open(paste0("F:/Harbour_les/les0901/wrfout_d03_2022-09-01_", time[i]))
+
+  U <- ncvar_get(dat.nc, "U")
+  V <- ncvar_get(dat.nc, "V")
+
+  ph <- ncvar_get(dat.nc, "PH")
+  phb <- ncvar_get(dat.nc, "PHB")
+  hgt <- ncvar_get(dat.nc, "HGT")
+
+  ###################
+  nc_close(nc=dat.nc)
+  ###################
+  
+  # linearly Interpolating U component (shifted by half a grid cell in the x-direction)
+  U_interpolated <- 0.5 * (U[1:(dim(U)[1] - 1), , ] + U[2:dim(U)[1], , ])
+
+  # linearly Interpolating V component (shifted by half a grid cell in the y-direction (lat))
+  V_interpolated <- 0.5 * (V[, 1:(dim(V)[2] - 1), ] + V[, 2:dim(V)[2], ])
+
+  rm(dat.nc, U, V)
+  
+  # height (a.g.l) = geospatial height/9.81-terrain height
+  array1 <- (ph+phb)/9.81
+  array2 <- array(hgt, dim = c(ncol(hgt), nrow(hgt), dim(array1)[3]))
+  array3 <- array1-array2
+
+  rm(ph, phb, hgt, array1, array2)
+  
+  # linearly Interpolating height (a.g.l) (shifted by half a grid cell in the z-direction (alt))
+  alt_interpolated <- 0.5 * (array3[, , 1:(dim(array3)[3]-1)] + array3[, , 2:dim(array3)[3]])
+
+  # remove unuseful objects from environments
+  rm(array3)
+  
+  df <- data.frame(
+      datetime = as.POSIXct(paste0("2022-09-01 ", hr[i], ":", min[i], ":", sec[i]), tz = "UTC"),
+      lon = closest_coordinate[[1]], 
+      lat = closest_coordinate[[2]], 
+      U = U_interpolated[index.lon, index.lat, 1:12],
+      V = V_interpolated[index.lon, index.lat, 1:12],
+      alt = alt_interpolated[index.lon, index.lat, 1:12]
+    )
+  list[[i]] <- df
+  
+  # remove unuseful objects from environments
+  rm(U_interpolated, V_interpolated, alt_interpolated)
+  
+}
+df <- do.call(rbind, list)
+write.csv(df, "D:/1 PhD Studies/1 Data/LES/0901/extract_les/wind.vertical.profile.csv")
+
+```
+
+```{r for pressure and temperature}
+
+
+filenames <- list.files(path = "F:/Harbour_les/les0901/", pattern = "")
+temp <- unlist(strsplit(filenames, "[_]"))
+
+hr <- temp[seq(4, length(filenames)*6, by = 6)];
+min <- temp[seq(5, length(filenames)*6, by = 6)];
+sec <- temp[seq(6, length(filenames)*6, by = 6)];
+
+time <- paste0(hr, "_", min, "_", sec)
+
+# Preallocate the list
+list <- vector("list", length(time))
+
+# Open the first file to get the necessary data
+dat.nc <- nc_open(paste0("F:/Harbour_les/les0901/wrfout_d03_2022-09-01_", time[1]))
+
+# Extract coordinates only once
+lat <- ncvar_get(dat.nc, "XLAT")
+lon <- ncvar_get(dat.nc, "XLONG")
+
+# Find the closest coordinate only once
+matrix <- cbind(lon = as.vector(lon), lat = as.vector(lat))
+distances <- distance(matrix, t(c(4.0053389, 51.9629833)), lonlat = TRUE) # pick up the les grids for the layers 1:12 closest to the location of the mast (Latitude: 51.9629833°N Longitude: 4.0053389°E)!!!
+closest_coordinate <- matrix[which.min(distances), ]
+index.lon <- unique(which(lon == closest_coordinate[[1]], arr.ind = TRUE)[, 1])
+index.lat <- unique(which(lat == closest_coordinate[[2]], arr.ind = TRUE)[, 2])
+
+rm(lon, lat, matrix, distances)
+
+# Close the initial file
+nc_close(dat.nc)
+
+for(i in seq.int(time)) {
+  dat.nc <- nc_open(paste0("F:/Harbour_les/les0901/wrfout_d03_2022-09-01_", time[i]))
+
+  t <- ncvar_get(dat.nc, "T") # unit:K
+  p <- ncvar_get(dat.nc, "P") # unit: Pa
+  pb <- ncvar_get(dat.nc, "PB") # unit: Pa
+  vapor <- ncvar_get(dat.nc, "QVAPOR") # unit: Kg Kg-1
+
+  ph <- ncvar_get(dat.nc, "PH")
+  phb <- ncvar_get(dat.nc, "PHB")
+  hgt <- ncvar_get(dat.nc, "HGT")
+
+  ###################
+  nc_close(nc=dat.nc)
+  ###################
+  
+  # height (a.g.l) = geospatial height/9.81-terrain height
+  array3 <- (ph+phb)/9.81-array(hgt, dim = c(ncol(hgt), nrow(hgt), 141))
+
+  rm(ph, phb, hgt, dat.nc)
+  
+  # linearly Interpolating height (a.g.l) (shifted by half a grid cell in the z-direction (alt))
+  alt_interpolated <- 0.5 * (array3[, , 1:(dim(array3)[3]-1)] + array3[, , 2:dim(array3)[3]])
+
+  # remove unuseful objects from environments
+  rm(array3)
+  
+  df <- data.frame(
+      datetime = as.POSIXct(paste0("2022-09-01 ", hr[i], ":", min[i], ":", sec[i]), tz = "UTC"),
+      lon = closest_coordinate[[1]], 
+      lat = closest_coordinate[[2]], 
+      alt = alt_interpolated[index.lon, index.lat, 1:12],
+      t = t[index.lon, index.lat, 1:12],
+      p = p[index.lon, index.lat, 1:12],
+      pb = pb[index.lon, index.lat, 1:12],
+      vapor = vapor[index.lon, index.lat, 1:12]
+    )
+  list[[i]] <- df
+  
+  # remove unuseful objects from environments
+  rm(df, t, p, pb, vapor, alt_interpolated)
+  
+}
+df <- do.call(rbind, list)
+write.csv(df, "D:/1 PhD Studies/1 Data/LES/0901/extract_les/meteo.vertical.profile.csv")
+
+```
+
+## **vertical profiles for comparison between LES & mast measurements**
+```{r visualize vertical profiles of wind}
+
+
+mast <- read.csv("D:/1 PhD Studies/1 Data/LES/met_mast_Rotterdam.csv", skip =1, sep = ";"); 
+datetime <- lubridate::ymd_hms(mast[-1, 1])
+mast <- data.frame(apply(mast[-1, -1], 2, as.numeric), datetime)
+mast <- mast[mast$datetime>=as.POSIXct("2022-09-06 12:16:00", tz = "UTC") & mast$datetime<=as.POSIXct("2022-09-06 12:56:00", tz = "UTC"),]
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# for the comparison of ws
+melt <- melt(mast, id.vars = "datetime", measure.vars = c("MMX_H135_Ws_Q1_avg", "MMX_H130B160_Ws_Q1_avg", "MMX_H080B160_Ws_Q1_avg", "MMX_H025B160_Ws_Q1_avg", "MMX_H025B340_Ws_Q1_avg"))
+
+alt.character <- apply(melt, 1, function(row){
+  strsplit(as.character(row["variable"]), "_")[[1]][2]
+})
+
+melt <- cbind(melt, alt.character)
+
+# select the same measurement height with different boom directions
+lowest.level <- c("H025B160", "H025B340")
+melt <- melt[melt$alt.character!=lowest.level[1], ]
+
+alt.num <- apply(melt, 1, function(row){
+  as.numeric(substr(row["alt.character"], start = 2, stop = 4))
+})
+
+melt <- cbind(melt, alt.num)
+
+melt$datetime <- as.character(melt$datetime)
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# for the comparison of wd
+melt <- melt(mast, id.vars = "datetime", measure.vars = c("MMX_H126B340_Wd_Q1_avg", "MMX_H126B160_Wd_Q1_avg", "MMX_H080B340_Wd_Q1_avg", "MMX_H021B160_Wd_Q1_avg")) # wd indicates where wd come from
+alt.character <- apply(melt, 1, function(row){
+  strsplit(as.character(row["variable"]), "_")[[1]][2]
+})
+
+melt <- cbind(melt, alt.character)
+
+# select the same measurement height with different boom directions
+lowest.level <- c("H126B340", "H126B160")
+melt <- melt[melt$alt.character!=lowest.level[2], ]
+
+alt.num <- apply(melt, 1, function(row){
+  as.numeric(substr(row["alt.character"], start = 2, stop = 4))
+})
+
+melt <- cbind(melt, alt.num)
+
+melt$datetime <- as.character(melt$datetime)
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+
+les <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/wind/wind.vertical.profile.csv")
+les <- mutate(les, ws=rWind::uv2ds(U,V)[,2], wd=rWind::uv2ds(U,V)[,1])#;names(data)
+les <- mutate(les, wd.1 = case_when(
+  wd-180>0 ~ wd-180,
+  wd-180<0 ~ wd-180+360)) # convert the degree to the number that indicates where wd come from
+
+
+#pdf("D:/1 PhD Studies/1 Data/LES/0901/plots/mast&les.wind.pdf")
+tiff(paste0("D:/1 PhD Studies/1 Data/LES/0901/plots/mast&les.wd.", lowest.level[1], ".tiff"), units="mm", width=300, height=200, res=300)
+ggplot()+
+  geom_point(les, mapping = aes(x = wd.1, y = alt, group = datetime, colour = datetime))+
+  geom_path(les, mapping = aes(x = wd.1, y = alt, group = datetime, colour = datetime))+
+  scale_color_viridis_d(option = "D") + # First color scale
+  labs(colour = "LES")+
+
+  # Indicate a new color scale
+  ggnewscale::new_scale_color() +
+  geom_point(melt, mapping = aes(x = value, y = alt.num, group = datetime, colour = datetime))+
+  geom_path(melt, mapping = aes(x = value, y = alt.num, group = datetime, colour = datetime))+
+  scale_color_viridis_d(option = "B")+
+  labs(colour = "mast.measure")+
+  ggtitle(lowest.level[1])
+
+while (!is.null(dev.list()))  dev.off()
+
+
+
+
+distHaversine(c(4.0053389, 51.9629833), c(les$lon[1], les$lat[1]))
+distVincentySphere(c(4.0053389, 51.9629833), c(les$lon[1], les$lat[1]))
+distGeo(c(4.0053389, 51.9629833), c(les$lon[1], les$lat[1]))
+```
+
+The ws measured at the lowest height level of 25 m mounted at the direction of 160 is only a bit larger (0.1-0.3 m/s) than that measured at 340 degree. Can be ignored in my case.
+The wd measured at 126 m by the cup anemometer mounted at the direction of 160 deg has a bias of ~5 deg than that mounted at 340 deg.
+The distance between the location of mast and les is around 13 m.
+
+```{r visualize vertical profiles of pressure and temperature}
+
+les <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/extract_les/meteo.vertical.profile.csv")
+p.total <- (les$p+les$pb)/100 # hpa
+pot <- les$t+300 # kelvin
+tair <- pot*(p.total/1000)^0.286 # kelvin
+e = les$vapor*p.total/(0.622+les$vapor) # hpa
+es <- 6.11*10^(2.5*10^6/461.52*(1/273.15-1/tair)) # hpa; Clausius-Clapeyron relation.
+es.1 <- 6.1078*10^(17.2693882*(tair-273.16)/(tair-35.86)) # the equation proposed by Murray (1967)
+RH <- e/es*100
+les <- cbind(les, p.total, pot, tair, e, es, es.1, RH) # temp and pot.temp are in kelvin
+
+
+
+mast <- read.csv("D:/1 PhD Studies/1 Data/LES/met_mast_Rotterdam.csv", skip =1, sep = ";"); 
+datetime <- lubridate::ymd_hms(mast[-1, 1])
+mast <- data.frame(apply(mast[-1, -1], 2, as.numeric), datetime)
+mast <- mast[mast$datetime>=as.POSIXct("2022-09-06 12:16:00", tz = "UTC") & mast$datetime<=as.POSIXct("2022-09-06 12:56:00", tz = "UTC"),]
+# calculate potential temperature in degree
+mast <- mutate(mast,
+               pot.126 = (MMX_H126_Temp_Q1_avg+273.15)*(1000/MMX_H126_Pair_Q1_avg)^0.286,
+               pot.21 = (MMX_H021_Temp_Q1_avg+273.15)*(1000/(MMX_H126_Pair_Q1_avg+13))^0.286) 
+mast$pot.126 <- mast$pot.126-273.15;
+mast$pot.21 <- mast$pot.21-273.15
+
+
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# for the comparison of RH and temperature
+pdf("D:/1 PhD Studies/1 Data/LES/0901/plots/mast&les.meteo.pdf")
+
+########################
+# plot relative humidity
+########################
+
+  melt <- melt(mast, id.vars = "datetime", measure.vars = c("MMX_H126_RH_Q1_avg", "MMX_H021_RH_Q1_avg"))
+  alt.character <- apply(melt, 1, function(row){
+  strsplit(as.character(row["variable"]), "_")[[1]][2]
+})
+  melt <- cbind(melt, alt.character)
+  alt.num <- apply(melt, 1, function(row){
+  as.numeric(substr(row["alt.character"], start = 2, stop = 4))
+})
+  melt <- cbind(melt, alt.num)
+  melt$datetime <- as.character(melt$datetime)
+
+ggplot()+
+  geom_point(les, mapping = aes(x = RH, y = alt, group = datetime, colour = datetime))+
+  geom_path(les, mapping = aes(x = RH, y = alt, group = datetime, colour = datetime))+
+  scale_color_viridis_d(option = "D") + # First color scale
+  labs(colour = "LES")+
+
+  # Indicate a new color scale
+  ggnewscale::new_scale_color() +
+  geom_point(melt, mapping = aes(x = value, y = alt.num, group = datetime, colour = datetime))+
+  geom_path(melt, mapping = aes(x = value, y = alt.num, group = datetime, colour = datetime))+
+  scale_color_viridis_d(option = "B")+
+  labs(colour = "mast.measure", x = "relative humidity [%]")
+
+########################
+# plot temperature
+########################
+
+  melt <- melt(mast, id.vars = "datetime", measure.vars = c("MMX_H126_Temp_Q1_avg", "MMX_H021_Temp_Q1_avg"))
+  alt.character <- apply(melt, 1, function(row){
+  strsplit(as.character(row["variable"]), "_")[[1]][2]
+})
+  melt <- cbind(melt, alt.character)
+  alt.num <- apply(melt, 1, function(row){
+  as.numeric(substr(row["alt.character"], start = 2, stop = 4))
+})
+  melt <- cbind(melt, alt.num)
+  melt$datetime <- as.character(melt$datetime)
+
+ggplot()+
+  geom_point(les, mapping = aes(x = tair-273.15, y = alt, group = datetime, colour = datetime))+
+  geom_path(les, mapping = aes(x = tair-273.15, y = alt, group = datetime, colour = datetime))+
+  scale_color_viridis_d(option = "D") + # First color scale
+  labs(colour = "LES")+
+
+  # Indicate a new color scale
+  ggnewscale::new_scale_color() +
+  geom_point(melt, mapping = aes(x = value, y = alt.num, group = datetime, colour = datetime))+
+  geom_path(melt, mapping = aes(x = value, y = alt.num, group = datetime, colour = datetime))+
+  scale_color_viridis_d(option = "B")+
+  labs(colour = "mast.measure", x = "temp [deg]")
+
+
+########################
+# plot potential temperature
+########################
+
+  melt <- melt(mast, id.vars = "datetime", measure.vars = c("pot.126", "pot.21"))
+  alt.num <- apply(melt, 1, function(row){
+  as.numeric(substr(row["variable"], start = 5, stop = 7))
+})
+  melt <- cbind(melt, alt.num)
+  melt$datetime <- as.character(melt$datetime)
+
+ggplot()+
+  geom_point(les, mapping = aes(x = pot-273.15, y = alt, group = datetime, colour = datetime))+
+  geom_path(les, mapping = aes(x = pot-273.15, y = alt, group = datetime, colour = datetime))+
+  scale_color_viridis_d(option = "D") + # First color scale
+  labs(colour = "LES")+
+
+  # Indicate a new color scale
+  ggnewscale::new_scale_color() +
+  geom_point(melt, mapping = aes(x = value, y = alt.num, group = datetime, colour = datetime))+
+  geom_path(melt, mapping = aes(x = value, y = alt.num, group = datetime, colour = datetime))+
+  scale_color_viridis_d(option = "B")+
+  labs(colour = "mast.measure", x = "potential temp [deg]")
+
+while (!is.null(dev.list()))  dev.off()
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+
+
+
+distHaversine(c(4.0053389, 51.9629833), c(les$lon[1], les$lat[1]))
+distVincentySphere(c(4.0053389, 51.9629833), c(les$lon[1], les$lat[1]))
+distGeo(c(4.0053389, 51.9629833), c(les$lon[1], les$lat[1]))
+```
+
+
+
+
+\newpage
+# **4. comparison with airborne measurements**
+## **4.1 select LES grid CELLs for comparison with airborne measurements**
+### **extract layers and save them as .gpkg file**
+For the flights of 0901 and 0906, I selected several layers of les grid cells, which contain the min and max of altitude of airborne measurements. The analysis showed that there is not a significant difference between the estimated emissions using different layers of les grid cells. Hence, for the flight 0901, I only selected the layer of 25, which contains the altitude skyarrow flew the most.
+
+```{r save the layers of 25 for wind as spatial vector file using terra package}
+
+# open the wrfout .nc files and interpolate the staggered grids
+library(ncdf4) # package for netcdf manipulation
+library(ncdf4.helpers) #nc.get.time.series
+library(raster)
+library(terra)
+
+filenames <- list.files(path = "F:/Harbour_les/les0901/", pattern = "")
+temp <- unlist(strsplit(filenames, "[_]"))
+
+hr <- temp[seq(4, length(filenames)*6, by = 6)];
+min <- temp[seq(5, length(filenames)*6, by = 6)];
+sec <- temp[seq(6, length(filenames)*6, by = 6)];
+
+time <- paste0(hr, "_", min, "_", sec)
+
+for(i in 50:73) {
+  dat.nc <- nc_open(paste0("F:/Harbour_les/les0901/wrfout_d03_2022-09-01_", time[i]))
+
+  lat <- ncvar_get(dat.nc, "XLAT")
+  lon <- ncvar_get(dat.nc, "XLONG")
+  U <- ncvar_get(dat.nc, "U")
+  V <- ncvar_get(dat.nc, "V")
+
+  ph <- ncvar_get(dat.nc, "PH")
+  phb <- ncvar_get(dat.nc, "PHB")
+  hgt <- ncvar_get(dat.nc, "HGT")
+
+  ###################
+  nc_close(nc=dat.nc)
+  ###################
+  
+  # linearly Interpolating U component (shifted by half a grid cell in the x-direction)
+  U_interpolated <- 0.5 * (U[1:(dim(U)[1] - 1), , ] + U[2:dim(U)[1], , ])
+
+  # linearly Interpolating V component (shifted by half a grid cell in the y-direction (lat))
+  V_interpolated <- 0.5 * (V[, 1:(dim(V)[2] - 1), ] + V[, 2:dim(V)[2], ])
+
+  # height (a.g.l) = geospatial height/9.81-terrain height
+  array1 <- (ph+phb)/9.81
+  array2 <- array(hgt, dim = c(ncol(hgt), nrow(hgt), dim(array1)[3]))
+  array3 <- array1-array2
+
+  # linearly Interpolating height (a.g.l) (shifted by half a grid cell in the z-direction (alt))
+  alt_interpolated <- 0.5 * (array3[, , 1:(dim(array3)[3]-1)] + array3[, , 2:dim(array3)[3]])
+
+  # remove unuseful objects from environments
+  keep <- c("U_interpolated", "V_interpolated", "alt_interpolated", "lon", "lat", "i", "time")
+  rm(list = setdiff(ls(), keep))
+  
+  # create the geometery points
+  coords <- cbind(as.vector(lon), as.vector(lat))
+  rm(lon, lat)
+  
+  # Loop over each time slice to create vector objects
+  z=25
+  
+  # Flatten the variable array for the current time slice
+  alt_flat <- as.vector(alt_interpolated[, , z])
+  U_flat <- as.vector(U_interpolated[, , z])
+  V_flat <- as.vector(V_interpolated[, , z])
+
+  # Create a SpatVector object
+  vect_obj <- vect(coords, type = "points", crs = "EPSG:4326", atts = data.frame(alt_flat, U_flat, V_flat))
+  rm(alt_flat, U_flat, V_flat, alt_interpolated, U_interpolated, V_interpolated)
+  
+  # Define the layer name
+  layer_name <- paste0("layer_", z)
+  file_name <- paste0("D:/1 PhD Studies/1 Data/LES/0901/wind/wind_", time[i], ".gpkg")
+  
+  # Save the SpatVector object to a GeoPackage file as a new layer
+  writeVector(vect_obj, filename = file_name, layer = layer_name, overwrite = TRUE, insert = TRUE)
+
+    
+}
+  
+  
+  # # set the CRS
+  # CEN_LAT <- 51.9543876647949
+  # TRUELAT1 <- 51
+  # TRUELAT2 <- 52
+  # STAND_LON <- 4.07250022888184
+  # CEN_LON <- 4.072509765625
+  # # Define the projection string
+  # proj_string <- paste0(
+  #   "+proj=lcc +lat_1=", TRUELAT1, " +lat_2=", TRUELAT2,
+  #   " +lon_0=", CEN_LON, " +lat_0=", CEN_LAT,
+  #   " +datum=WGS84"
+  #   )
+
+```
+
+First, deal with the staggered grids!
+
+I have tried to assign the crs `proj_string` to the raster file converted from the wrf output .nc file, and the longitude and latitude stays the same. When I tried to overlay the raster file on the base map, I project the raster file with `projectRaster(raster_data, crs = CRS("+proj=longlat +datum=WGS84"))` and `projectRaster(raster_data, crs = CRS("+proj=merc +datum=WGS84"))`, and they both yielded weird results. So, I did NOT consider the crs when saving the .nc file as raster object and overlay the raster on a base stadiamap.
+
+Another problem appears when I want to use raster package to create a rastre object. The domain is not a rectangular if using lonlat as projection. Try to create a vector object. But, how to assign the lonlat directly to a vector file??
+
+I tried to convert the lonlat to geometry lists using sf package, but it is very slow!! Only one small step took me at least 6 mins. Abandon this way...
+
+Still use terra package! Use the function vect() to create a spatialvector object.
+
+```{r save the layers of 25 for plume as spatial vector file using terra package}
+
+# open the wrfout .nc files and interpolate the staggered grids
+library(ncdf4) # package for netcdf manipulation
+library(ncdf4.helpers) #nc.get.time.series
+#library(raster)
+library(terra)
+
+filenames <- list.files(path = "F:/Harbour_les/les0901/", pattern = "")
+temp <- unlist(strsplit(filenames, "[_]"))
+
+hr <- temp[seq(4, length(filenames)*6, by = 6)];
+min <- temp[seq(5, length(filenames)*6, by = 6)];
+sec <- temp[seq(6, length(filenames)*6, by = 6)];
+
+time <- paste0(hr, "_", min, "_", sec)
+
+
+for(i in 52:73) {
+  dat.nc <- nc_open(paste0("F:/Harbour_les/les0901/wrfout_d03_2022-09-01_", time[i]))
+
+  plume <- ncvar_get(dat.nc, "PLUME")  # the unit is kg N2O/kg Air
+  lat <- ncvar_get(dat.nc, "XLAT")
+  lon <- ncvar_get(dat.nc, "XLONG")
+
+  ph <- ncvar_get(dat.nc, "PH")
+  phb <- ncvar_get(dat.nc, "PHB")
+  hgt <- ncvar_get(dat.nc, "HGT")
+
+  ###################
+  nc_close(nc=dat.nc)
+  ###################
+  
+  # height (a.g.l) = geospatial height/9.81-terrain height
+  array1 <- (ph+phb)/9.81
+  array2 <- array(hgt, dim = c(ncol(hgt), nrow(hgt), dim(array1)[3]))
+  array3 <- array1-array2
+
+  # linearly Interpolating height (a.g.l) (shifted by half a grid cell in the z-direction (alt))
+  alt_interpolated <- 0.5 * (array3[, , 1:(dim(array3)[3]-1)] + array3[, , 2:dim(array3)[3]])
+
+  # convert the unit of kg N2O/ kg Air to the unit of ppb
+  N2O = plume*28.96/44*10^9
+  # convert the unit of kg CH4/ kg Air to the unit of ppb
+  CH4 = plume*28.96/16*10^9  
+
+  # remove unuseful objects from environments
+  keep <- c("N2O", "CH4", "alt_interpolated", "lon", "lat", "i", "time")
+  rm(list = setdiff(ls(), keep))
+  
+  # create the geometery points
+  coords <- cbind(as.vector(lon), as.vector(lat))
+  rm(lon, lat)
+  # Loop over each time slice to create vector objects
+  z=25
+  
+  # Flatten the variable array for the current time slice
+  alt_flat <- as.vector(alt_interpolated[, , z])
+  N2O_flat <- as.vector(N2O[, , z])
+  CH4_flat <- as.vector(CH4[, , z])
+
+  # Create a SpatVector object
+  vect_obj <- vect(coords, type = "points", crs = "EPSG:4326", atts = data.frame(alt_flat, N2O_flat, CH4_flat))
+  
+  # Define the layer name
+  layer_name <- paste0("layer_", z)
+  file_name <- paste0("D:/1 PhD Studies/1 Data/LES/0901/wind/plume_", time[i], ".gpkg")
+  
+  # Save the SpatVector object to a GeoPackage file as a new layer
+  writeVector(vect_obj, filename = file_name, layer = layer_name, overwrite = TRUE, insert = TRUE)
+
+    
+}
+
+```
+ 
+The .gpkg file named as "plume" contains three attributes, altitude, n2o, and ch4.
+
+```{r save the layers of 25 for pressure and temperature as spatial vector file using terra package}
+
+# open the wrfout .nc files and interpolate the staggered grids
+library(ncdf4) # package for netcdf manipulation
+library(ncdf4.helpers) #nc.get.time.series
+#library(raster)
+library(terra)
+
+filenames <- list.files(path = "F:/Harbour_les/les0901/", pattern = "")
+temp <- unlist(strsplit(filenames, "[_]"))
+
+hr <- temp[seq(4, length(filenames)*6, by = 6)];
+min <- temp[seq(5, length(filenames)*6, by = 6)];
+sec <- temp[seq(6, length(filenames)*6, by = 6)];
+
+time <- paste0(hr, "_", min, "_", sec)
+
+for(i in 1:length(time)) {
+  dat.nc <- nc_open(paste0("F:/Harbour_les/les0901/wrfout_d03_2022-09-01_", time[i]))
+
+  t <- ncvar_get(dat.nc, "T") # unit:K
+  # p <- ncvar_get(dat.nc, "P") # unit: Pa
+  # pb <- ncvar_get(dat.nc, "PB") # unit: Pa
+  # vapor <- ncvar_get(dat.nc, "QVAPOR") # unit: Kg Kg-1
+  
+  lat <- ncvar_get(dat.nc, "XLAT")
+  lon <- ncvar_get(dat.nc, "XLONG")
+
+  ph <- ncvar_get(dat.nc, "PH")
+  phb <- ncvar_get(dat.nc, "PHB")
+  hgt <- ncvar_get(dat.nc, "HGT")
+
+  ###################
+  nc_close(nc=dat.nc)
+  ###################
+  
+  # height (a.g.l) = geospatial height/9.81-terrain height
+  array1 <- (ph+phb)/9.81
+  array2 <- array(hgt, dim = c(ncol(hgt), nrow(hgt), dim(array1)[3]))
+  array3 <- array1-array2
+
+  # linearly Interpolating height (a.g.l) (shifted by half a grid cell in the z-direction (alt))
+  alt_interpolated <- 0.5 * (array3[, , 1:(dim(array3)[3]-1)] + array3[, , 2:dim(array3)[3]])
+
+  # remove unuseful objects from environments
+  rm(ph, phb, hgt, array1, array2, array3)
+  
+  # create the geometery points
+  coords <- cbind(as.vector(lon), as.vector(lat))
+
+  # Loop over each time slice to create vector objects
+  for (z in 25:26) {
+  
+  # Flatten the variable array for the current time slice
+  alt_flat <- as.vector(alt_interpolated[, , z])
+  t_flat <- as.vector(t[,,z])
+  # p_flat <- as.vector(p.total[,,z])
+  # vapor_flat <- as.vector(vapor[,,z])
+
+  # Create a SpatVector object
+  vect_obj <- vect(coords, type = "points", crs = "EPSG:4326", atts = data.frame(alt_flat, t_flat))
+  
+  # Define the layer name
+  layer_name <- paste0("layer_", z)
+  file_name <- paste0("D:/1 PhD Studies/1 Data/LES/0901/wind/temp_", time[i], ".gpkg")
+  
+  # Save the SpatVector object to a GeoPackage file as a new layer
+  writeVector(vect_obj, filename = file_name, layer = layer_name, overwrite = TRUE, insert = TRUE)
+}
+    
+}
+
+```
+
+### **extract grid cells closest to the spatial point at exactly the same time stamps**
+```{r select airborne measurements corresponding to les time stamps and save it as a dataframe}
+
+# load airborne measurements
+flight <- '0901'
+wdir <- "D:/1 phd studies/1 data/Rotterdam_campaign_2022/"
+
+data <- read.csv(paste0(wdir, flight, "/AirCore/AirCore_retrieval/AirCore_N2O_CO_CO2_CH4_CO_2022", flight, ".csv"))
+data <- data.frame(date = ISOdate(data$yyyy, data$mm, data$dd, data$hh, data$min, data$sec, tz='UTC'), data)
+data$date <- round(data$date) # the second is not integer
+# pick up airborne measurements for harbour areas
+data <- data[
+  data$date>as.POSIXlt("2022-09-01 13:48:00", tz='UTC') & data$date<as.POSIXlt("2022-09-01 14:24:00", tz='UTC'),
+  c("date", "lat", "lon", "alt", "N2O.ac.ppb", "CH4.ac.ppb")
+  ]
+names(data)[names(data)=="lat"] <- "lat.ac";
+names(data)[names(data)=="lon"] <- "lon.ac";
+names(data)[names(data)=="alt"] <- "alt.ac"
+
+# extract airborne measurements at the same time stamps for LES
+filenames <- list.files(path = "F:/Harbour_les/les0901/", pattern = "")
+temp <- unlist(strsplit(filenames, "[_]"))
+
+hr <- temp[seq(4, length(filenames)*6, by = 6)];
+min <- temp[seq(5, length(filenames)*6, by = 6)];
+sec <- temp[seq(6, length(filenames)*6, by = 6)];
+
+les.date <- lubridate::ymd_hms(paste0("2022-09-01", hr, ":", min, ":", sec))
+
+data.sel <- lapply(as.vector(les.date), function(daytime){
+  subset(data[, 1:4], date==daytime)
+})  # data.sel is a list
+ # data.sel <- do.call(rbind, data.sel) # convert to data frame
+ # write.csv(data.sel, paste0("D:/1 PhD Studies/1 Data/LES/0901/2022_0901_aircore.sel.csv"), row.names = FALSE)
+ 
+ 
+```
+
+```{r extract les grid cells closest to the airborne measurements}
+# extract the time stamp of LES
+from <- as.POSIXct("2022-09-01 13:48:00", tz = "UTC");
+to <- as.POSIXct("2022-09-01 14:24:00", tz = "UTC")
+les.date <- seq(from = from, to = to, by = "30 secs")
+
+hr <- formatC(as.numeric(format(les.date, "%H")), width = 2, flag = "0")
+min <- formatC(as.numeric(format(les.date, "%M")), width = 2, flag = "0")
+sec <- formatC(as.numeric(format(les.date, "%S")), width = 2, flag = "0")
+
+time <- paste0(hr, "_", min, "_", sec)
+
+# The distance [m] per degree of latitude and longitude
+R=6371000
+per.lat <- 111320
+per.lon <- function(latitude) {
+  return(111320*cos(latitude*pi/180))
+}
+
+data.sel <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/2022_0901_aircore.sel.csv")
+
+
+results_list <- list()
+for(i in seq.int(time)) {
+    
+  vec <- vect(paste0("D:/1 PhD Studies/1 Data/LES/0901/wind/wind_", time[i], ".gpkg"), layer = "layer_25")
+  coords <- geom(vec)[,c('x', 'y')]
+  vec.df <- cbind(terra::as.data.frame(vec), coords)
+  rm(vec)
+  
+  # Calculate euclidean distances [meters] from each point in the spatial vector to the point of airborne trajectories 
+  alt <- data.sel$alt.ac[data.sel$date==as.character(les.date[i])];
+  lon <- data.sel$lon.ac[data.sel$date==as.character(les.date[i])];
+  lat <- data.sel$lat.ac[data.sel$date==as.character(les.date[i])]
+  
+  if(length(alt)==0) next
+  
+  distances <- sqrt((vec.df$alt_flat - alt)^2 + 
+                    ((vec.df$x - lon) * per.lon(vec.df$y))^2 + 
+                    ((vec.df$y - lat) * per.lat)^2)
+  
+  # save the extracted grids as a dataframe
+  results_list[[i]] <- cbind(date = les.date[i], vec.df[which.min(distances), ])
+  rm(vec.df, distances)
+}
+  # Combine all results into a single data frame
+  df <- do.call(rbind, results_list)
+
+  # save the extracted data
+  write.csv(df, paste0("D:/1 PhD Studies/1 Data/LES/0901/extract_les/wind.csv"), row.names = FALSE)
+
+
+```
+
+### **For each time stamp, extract the grid cells of LES matched with the flight trajectory for the one layer_25**
+```{r }
+
+# load airborne measurements
+flight <- '0901'
+wdir <- "D:/1 phd studies/1 data/Rotterdam_campaign_2022/"
+
+data <- read.csv(paste0(wdir, flight, "/AirCore/AirCore_retrieval/AirCore_N2O_CO_CO2_CH4_CO_2022", flight, ".csv"))
+data <- data.frame(date = ISOdate(data$yyyy, data$mm, data$dd, data$hh, data$min, data$sec, tz='UTC'), data)
+data$date <- round(data$date) # the second is not integer
+
+# pick up airborne measurements for harbour areas
+data <- data[data$time>(14*3600+5*60+16) & data$time<(14*3600+17*60), ]
+
+# convert dataframe to a spatialvector
+data.vec <- vect(data, geom = c("lon", "lat"))
+
+# Ensure they have the same CRS (Coordinate Reference System)
+# vec <- vect(paste0("D:/1 PhD Studies/1 Data/LES/0901/wind/plume_13_48_00.gpkg"), layer = "layer_25")
+# crs(data.vec) <- crs(vec)
+
+# create LES output timestamps
+from <- as.POSIXct("2022-09-01 13:48:00", tz = "UTC");
+to <- as.POSIXct("2022-09-01 14:24:00", tz = "UTC")
+les.date <- seq(from = from, to = to, by = "30 secs")
+
+hr <- formatC(as.numeric(format(les.date, "%H")), width = 2, flag = "0")
+min <- formatC(as.numeric(format(les.date, "%M")), width = 2, flag = "0")
+sec <- formatC(as.numeric(format(les.date, "%S")), width = 2, flag = "0")
+
+time <- paste0(hr, "_", min, "_", sec)
+
+
+# Convert time components to POSIXct once, outside the loop
+timestamps <- as.POSIXct(paste0("2022-09-01 ", hr, ":", min, ":", sec), tz = "UTC")
+
+# pick up the data simulated by LES
+results_list <- vector("list", length(time)) 
+index <- 1
+for(i in seq.int(time)){
+    vec <- vect(paste0("D:/1 PhD Studies/1 Data/LES/0901/wind/plume_", time[i], ".gpkg"), layer = "layer_25")
+    df <- as.data.frame(crop(vec, data.vec), geom = "XY")
+    
+    # remove unuseful objects from environments
+    keep <- c( "i", "time", "timestamps", "data.vec", "results_list", "index", "df")
+    rm(list = setdiff(ls(), keep))
+
+    results_list[[index]] <- cbind(date = timestamps[i], layer = "layer_25", df)
+    index <- index+1
+    
+    remove("df")
+}
+
+# Combine all results into a single data frame
+df.sel <- do.call(rbind, results_list)
+
+
+names(df.sel)[names(df.sel)=="alt_flat"] <- "alt"
+names(df.sel)[names(df.sel)=="x"] <- "lon"
+names(df.sel)[names(df.sel)=="y"] <- "lat"
+
+write.csv(df.sel, "D:/1 PhD Studies/1 Data/LES/0901/extract_les/plume.layers.csv") # unit is ppb for both N2O and CH4
+
+
+```
+
+Whether aligning the crs of vec with the crs of data.vec, the trimmed area is not exactly the same to the smaller longitude of both of them. 
+
+
+
+## **4.2 Assimilate temporal resolution of LES (30 seconds) and airborne measurements (1 second)**
+The first question came up to me is that to which variable the LES data is interpolated? longitude, latitude, altitude, time? or several joint variables?
+Based on analysis shown below, the ws and wd do not diff significantly for the layers 25 and 26. Hence, I do not consider the altitude as a variable for interpolation.
+
+
+## **4.3 Emission calculation using several extraction methods**
+How to compare the LES output concentration enhancements with the real concentration enhancements? After discussing with Huilin, we finally decided to use the enhancemnets areas times average wind speed for the comparison (re-scaling) with airborne measurements.
+```{r Extraction method#1: grid cells closest to the spatial point at exactly the same time stamps}
+
+# load 6th transect
+# THE PROBLEM IS THAT LES simulates enhancements, but aircore measurements are real concentrations
+# extract the enhancements using the code in the following section 4.4
+n2o <- read.csv("D:/1 PhD Studies/3.1 Results of projects/2022_Rotterdam_Campaign/Airborne_meas/0901/n2o.transect6.csv")  # flight 0901 does not show enhancements for ch4
+
+# load LES data
+les <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/extract_les/plume.csv")
+names(les)[names(les)=="x"] <- "lon"
+names(les)[names(les)=="y"] <- "lat"
+les <- les[les$lon>min(n2o$lon) & les$lon<max(n2o$lon) &les$lat>min(n2o$lat) & les$lat<max(n2o$lat),] # select the les grid cells corresponding to 6th transect (downwind transect)
+
+ws <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/extract_les/wind.csv")
+ws <- cbind(ws, ws = sqrt(ws$U_flat^2+ws$V_flat^2))
+
+
+# calculate the emissions using the equation (1) in Ražnjevic et al., 2022
+ws.les <- mean(ws$ws);
+ws.meas <- mean(n2o$ws);
+Q.les <- 22.566292 # kg/h
+
+# The distance [m] per degree of latitude and longitude
+per.lat <- 111320
+per.lon <- function(latitude) {
+  return(111320*cos(latitude*pi/180))
+}
+
+# convert the coordinates to distance along the trajectory
+  lon.zero.6 <- 4.0199
+  lat.zero.6 <- 51.9136
+  coors <- data.frame(lon = lon.zero.6, lat = lat.zero.6)
+  
+# Check if latitudes are NA
+valid_coords <- !is.na(les$lat)
+
+# Calculate distances only for valid coordinates
+distance <- ifelse(
+  valid_coords,
+  sqrt((lon.zero.6 - les$lon)^2 * per.lon(les$lat)^2 + (lat.zero.6 - les$lat)^2 * per.lat^2) *
+    ifelse(les$lon > lon.zero.6, 1, -1),
+  NA
+)
+# Combine the calculated distance with the original data
+les$distance <- distance
+
+
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# # CHECK PLOT
+# # fit a smooth curve using the extracted grid cell values
+#   fit <- smooth.spline(les$distance, les$N2O_flat); summary(fit)
+#   les$pre <- predict(fit, les$distance)$y
+# # fit a smooth curve using airborne measurements
+#   # Ensure there are no NA or infinite values in the inputs
+#   valid_indices <- !is.na(n2o$distance) & !is.na(n2o$n2o) & is.finite(n2o$distance) & is.finite(n2o$n2o)
+# 
+#   # Filter the data to include only valid rows
+#   n2o_valid <- n2o[valid_indices, ]
+# 
+#   # Fit the smooth spline model
+#   fit <- smooth.spline(n2o_valid$distance, n2o_valid$n2o)
+#   n2o_valid$pre <- predict(fit, n2o_valid$distance)$y
+# 
+# 
+  #   ggplot()+
+  #   geom_point(n2o_valid, mapping = aes(x = distance, y = n2o))+
+  #   geom_line(n2o_valid, mapping = aes(x = distance, y = pre), col = 'blue')+
+  #   geom_smooth(n2o_valid, mapping = aes(x = distance, y = n2o), method = "loess", col = 'red', size = 0.1) +
+  # 
+  #   geom_point(les, mapping = aes(x = distance, y = N2O_flat))+
+  #   geom_line(les, mapping = aes(x = distance, y = pre), col = 'blue')+
+  #   geom_smooth(les, mapping = aes(x = distance, y = N2O_flat), method = "loess", col = 'red', size = 0.1) +
+  # ggtitle("red:LOESS & blue:Spline")
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  
+    
+# use a loop to calculate the enhancements areas using different fitting functions for three datasets
+  # Ensure there are no NA or infinite values in the inputs
+  valid_indices <- !is.na(n2o$distance) & !is.na(n2o$n2o) & is.finite(n2o$distance) & is.finite(n2o$n2o)
+
+  # Filter the data to include only valid rows
+  n2o <- n2o[valid_indices, ]
+
+datasets <- list(les = les, n2o = n2o)
+  
+fit_smooth_spline <- function(x, y) {
+  smooth.spline(x, y)
+}
+
+fit_loess <- function(x, y) {
+  loess(y ~ x)
+}
+
+fitting_functions <- list(smooth_spline = fit_smooth_spline, loess = fit_loess)
+
+results <- list()
+
+for (i in names(datasets)) {
+  
+  data <- datasets[[i]]
+  
+  if (i == "les") {
+    x <- "distance"
+    y <- "N2O_flat"  # CH4_flat can be derived by multiplying by 44/26
+  } else if (i == "n2o") {
+    x <- "distance"
+    y <- "n2o"
+  } else {
+    x <- "distance"
+    y <- "ch4"
+  }
+
+  for (j in names(fitting_functions)) {# Loop through each fitting function
+    fit <- fitting_functions[[j]]
+    fit <- fit(data[[x]], data[[y]])
+    if(j == "smooth_spline") {
+          f <- function(x) { predict(fit, x)$y }
+          min <- -7000; max <- 5000  # separate bg from the adjacent peak
+    } else {
+          f <- function(x) { predict(fit, x) }
+          min <- min(data[[x]]); max <- 5000  # separate bg from the adjacent peak
+    }
+    integral <- integrate(f, min, max)
+    results[[paste(i, j, sep = "_")]] <- integral$value
+  }
+}
+
+les.n2o <- c(les.spline = results$les_smooth_spline, les.loess = results$les_loess)
+meas.n2o <- c(meas.spline = results$n2o_smooth_spline, meas.loess = results$n2o_loess)
+
+
+################################################################
+Q.n2o <- outer(meas.n2o*ws.meas, les.n2o*ws.les, FUN = "/")*Q.les
+################################################################
+
+
+```
+
+```{r Extraction method#2: For each time stamp, extract the grid cells of LES matched with the flight trajectory}
+
+# load 6th transect
+# THE PROBLEM IS THAT LES simulates enhancements, but aircore measurements are real concentrations
+# extract the enhancements using the code in the following section 4.4
+n2o <- read.csv("D:/1 PhD Studies/3.1 Results of projects/2022_Rotterdam_Campaign/Airborne_meas/0901/n2o.transect6.csv")  # flight 0901 does not show enhancements for ch4
+
+# load LES data
+les <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/extract_les/plume.layers.csv")
+names(les)[names(les)=="x"] <- "lon"
+names(les)[names(les)=="y"] <- "lat"
+les <- les[les$lon>min(n2o$lon) & les$lon<max(n2o$lon) &les$lat>min(n2o$lat) & les$lat<max(n2o$lat),] # select the les grid cells corresponding to 6th transect (downwind transect)
+
+ws <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/extract_les/wind.layers.csv")
+ws <- cbind(ws, ws = sqrt(ws$U_flat^2+ws$V_flat^2))
+
+
+# calculate the emissions using the equation (1) in Ražnjevic et al., 2022
+ws.les <- mean(ws$ws);
+ws.meas <- mean(n2o$ws);
+Q.les <- 22.566292 # kg/h
+
+# The distance [m] per degree of latitude and longitude
+per.lat <- 111320
+per.lon <- function(latitude) {
+  return(111320*cos(latitude*pi/180))
+}
+
+# convert the coordinates to distance along the trajectory
+  lon.zero.6 <- 4.0199
+  lat.zero.6 <- 51.9136
+  coors <- data.frame(lon = lon.zero.6, lat = lat.zero.6)
+  
+# Check if latitudes are NA
+valid_coords <- !is.na(les$lat)
+
+# Calculate distances only for valid coordinates
+distance <- ifelse(
+  valid_coords,
+  sqrt((lon.zero.6 - les$lon)^2 * per.lon(les$lat)^2 + (lat.zero.6 - les$lat)^2 * per.lat^2) *
+    ifelse(les$lon > lon.zero.6, 1, -1),
+  NA
+)
+# Combine the calculated distance with the original data
+les$distance <- distance
+
+
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# check the fitted lines fro each time stamp
+  # pdf("D:/1 PhD Studies/1 Data/LES/0901/plots/les.fit.pdf")
+  # for(i in unique(les$date)){
+
+  # sel <- les[les$date== i,]
+  # fit <- smooth.spline(sel$distance, sel$N2O_flat); summary(fit)
+  # sel$pre <- predict(fit, sel$distance)$y
+  # 
+  # p.n2o <- ggplot()+
+  #   geom_point(sel, mapping = aes(x = distance, y = N2O_flat))+
+  #   geom_line(sel, mapping = aes(x = distance, y = pre), col = 'blue')+
+  #   geom_smooth(sel, mapping = aes(x = distance, y = N2O_flat), method = "loess", col = 'red', size = 0.1) +
+  # ggtitle(paste("red:LOESS & blue:spline", i, sep = "_"))
+    #facet_row(~layer)
+  # 
+  #   p.ch4 <- ggplot()+geom_point(sel, mapping = aes(x = distance, y = CH4_flat))+
+  #   geom_line(sel, mapping = aes(x = distance, y = pre), col = 'blue')+  
+  #   geom_smooth(sel, mapping = aes(x = distance, y = CH4_flat), method = "loess", col = 'red', size = 0.1) +
+  # ggtitle(paste("red:LOESS & blue:spline", i, sep = "_"))
+  #   #facet_row(~layer)
+  # 
+  #   grid.arrange(p.n2o, p.ch4, nrow=2)
+  # }
+  # while (!is.null(dev.list()))  dev.off()
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  
+  
+#########################################################################################################  
+# use a loop to calculate the enhancements areas using different fitting functions for three datasets
+
+fit_smooth_spline <- function(x, y) {
+  smooth.spline(x, y)
+}
+
+fit_loess <- function(x, y) {
+  loess(y ~ x)
+}
+
+fitting_functions <- list(smooth_spline = fit_smooth_spline, loess = fit_loess)
+
+
+# measurements
+results <- list()
+
+  # Ensure there are no NA or infinite values in the inputs
+  valid_indices <- !is.na(n2o$distance) & !is.na(n2o$n2o) & is.finite(n2o$distance) & is.finite(n2o$n2o)
+
+  # Filter the data to include only valid rows
+  n2o <- n2o[valid_indices, ]
+
+    x <- "distance"
+    y <- "n2o"
+    data <- n2o
+    
+  for (j in names(fitting_functions)) {   # Loop through each fitting function
+
+    fit <- fitting_functions[[j]]
+    fit <- fit(data[[x]], data[[y]])
+    if(j == "smooth_spline") {
+          f <- function(x) { predict(fit, x)$y }
+          min <- -7000; max <- 5000  # separate bg from the adjacent peak
+    } else {
+          f <- function(x) { predict(fit, x) }
+          min <- min(data[[x]]); max <- 5000  # separate bg from the adjacent peak
+    }
+    integral <- integrate(f, min, max)
+    results[[paste("n2o", j, sep = "_")]] <- integral$value
+  }
+
+
+# LES model 
+for(i in unique(les$date)) {
+  
+  data <- les[les$date==i, ]
+  
+    for (j in names(fitting_functions)) {   # Loop through each fitting function
+
+    fit <- fitting_functions[[j]]
+    fit <- fit(data[["distance"]], data[["N2O_flat"]])
+    if(j == "smooth_spline") {
+          f <- function(x) { predict(fit, x)$y }
+    } else {
+          f <- function(x) { predict(fit, x) }
+    }
+    integral <- integrate(f, min(data[["distance"]]), max(data[["distance"]]))
+    results[[paste(i, j, sep = "_")]] <- integral$value
+  }
+
+}
+
+    
+les.n2o <- unlist(results[-c(1:2)])
+meas.n2o <- c(spline = results$n2o_smooth_spline, loess = results$n2o_loess)
+
+
+################################################################
+Q.n2o <- outer(meas.n2o*ws.meas, les.n2o*ws.les, FUN = "/")*Q.les   #kg/h
+################################################################
+
+```
+
+```{r Extraction method#2: for several averaging time periods}
+
+# load 6th transect
+# THE PROBLEM IS THAT LES simulates enhancements, but aircore measurements are real concentrations
+# extract the enhancements using the code in the following section 4.4
+n2o <- read.csv("D:/1 PhD Studies/3.1 Results of projects/2022_Rotterdam_Campaign/Airborne_meas/0901/n2o.transect6.csv")  # flight 0901 does not show enhancements for ch4
+
+# load LES data
+les <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/extract_les/plume.layers.csv")
+names(les)[names(les)=="x"] <- "lon"
+names(les)[names(les)=="y"] <- "lat"
+les <- les[les$lon>min(n2o$lon) & les$lon<max(n2o$lon) &les$lat>min(n2o$lat) & les$lat<max(n2o$lat),] # select the les grid cells corresponding to 6th transect (downwind transect)
+
+ws <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/extract_les/wind.layers.csv")
+ws <- cbind(ws, ws = sqrt(ws$U_flat^2+ws$V_flat^2))
+
+
+# calculate the emissions using the equation (1) in Ražnjevic et al., 2022
+ws.les <- mean(ws$ws);
+ws.meas <- mean(n2o$ws);
+Q.les <- 22.566292 # kg/h
+
+# The distance [m] per degree of latitude and longitude
+per.lat <- 111320
+per.lon <- function(latitude) {
+  return(111320*cos(latitude*pi/180))
+}
+
+# convert the coordinates to distance along the trajectory
+  lon.zero.6 <- 4.0199
+  lat.zero.6 <- 51.9136
+  coors <- data.frame(lon = lon.zero.6, lat = lat.zero.6)
+  
+# Check if latitudes are NA
+valid_coords <- !is.na(les$lat)
+
+# Calculate distances only for valid coordinates
+distance <- ifelse(
+  valid_coords,
+  sqrt((lon.zero.6 - les$lon)^2 * per.lon(les$lat)^2 + (lat.zero.6 - les$lat)^2 * per.lat^2) *
+    ifelse(les$lon > lon.zero.6, 1, -1),
+  NA
+)
+# Combine the calculated distance with the original data
+les$distance <- distance
+
+
+  
+# calculate the average over specified intervals
+les$date <- as.POSIXct(les$date, tz = "UTC")
+interval <- c("2 min", "5 min", "10 min", "20 min")
+
+data.list <- list()
+for(i in interval){
+  df <- les %>%
+  # Round the timestamp to the nearest 2 minutes
+  mutate(interval = floor_date(date, unit = i)) %>%
+  # Group by spatial point and 2-minute interval
+  group_by(distance, interval, layer) %>%
+  # Calculate the mean value for each group
+  summarize(n2o = mean(N2O_flat, na.rm = TRUE), ch4 = mean(CH4_flat, na.rm = TRUE)) %>%
+  # Ungroup the data frame
+  ungroup()
+  
+  data.list[[i]] <- as.data.frame(df)
+}
+
+
+
+################################### CHECK PLOT #####################################
+
+# # Function to generate plots 
+# create_plot <- function(df, y_var, y_pred, title_prefix) {
+#   ggplot(df, aes(x = distance, colour = interval)) +
+#     geom_point(aes_string(y = y_var), size = 0.1) +
+#     geom_line(aes_string(y = y_pred, group = "interval")) +
+#     geom_smooth(aes_string(y = y_var, group = "interval"), method = "loess", col = 'red', size = 0.1) +
+#     #facet_grid(rows = vars(layer)) +
+#     ggtitle(paste("red:LOESS & colourful:spline", title_prefix, sep = "_"))
+# }
+# 
+# # Initialize a list to store the plots
+# plot_list <- list()
+# 
+# for(i in names(data.list)){
+# 
+#   df <- data.list[[i]]
+#   df$interval <- as.character(df$interval)
+# 
+#   df.1 <- df %>%
+#   group_by(interval) %>%
+#   mutate(
+#     # Predict the values based on the fitted spline
+#     pre.n2o = predict(smooth.spline(distance, n2o), distance)$y,
+#     pre.ch4 = predict(smooth.spline(distance, ch4), distance)$y
+#   ) %>%
+#   ungroup() 
+# 
+#   # Generate the plots using the function and store them in the list
+#   plot_list[[paste0("p.n2o_", i)]] <- create_plot(df.1, "n2o", "pre.n2o", i)
+# }
+# 
+# # Arrange all plots into one figure and save it
+# combined_plot <- marrangeGrob(plot_list, nrow = 2, ncol = 2)
+# ggsave("D:/1 PhD Studies/1 Data/LES/0901/plots/les.fitting.plume.diff.interval.tiff", combined_plot, width = 14, height = 10)
+# 
+# while (!is.null(dev.list()))  dev.off()
+####################################################################################
+
+
+#########################################################################################################  
+# use a loop to calculate the enhancements areas using different fitting functions for three datasets
+
+fit_smooth_spline <- function(x, y) {
+  smooth.spline(x, y)
+}
+
+fit_loess <- function(x, y) {
+  loess(y ~ x)
+}
+
+fitting_functions <- list(smooth_spline = fit_smooth_spline, loess = fit_loess)
+
+
+# measurements
+results <- list()
+
+  # Ensure there are no NA or infinite values in the inputs
+  valid_indices <- !is.na(n2o$distance) & !is.na(n2o$n2o) & is.finite(n2o$distance) & is.finite(n2o$n2o)
+
+  # Filter the data to include only valid rows
+  n2o <- n2o[valid_indices, ]
+
+    x <- "distance"
+    y <- "n2o"
+    data <- n2o
+    
+  for (j in names(fitting_functions)) {   # Loop through each fitting function
+
+    fit <- fitting_functions[[j]]
+    fit <- fit(data[[x]], data[[y]])
+    if(j == "smooth_spline") {
+          f <- function(x) { predict(fit, x)$y }
+          min <- -7000; max <- 5000  # separate bg from the adjacent peak
+    } else {
+          f <- function(x) { predict(fit, x) }
+          min <- min(data[[x]]); max <- 5000  # separate bg from the adjacent peak
+    }
+    integral <- integrate(f, min, max)
+    results[[paste("n2o", j, sep = "_")]] <- integral$value
+  }
+
+
+# LES model 
+for(k in names(data.list)) {
+  df <- data.list[[k]]
+  df$interval <- as.character(df$interval)
+  
+  for(i in unique(df$interval)) {
+  
+  data <- df[df$interval==i, ]
+  
+    for (j in names(fitting_functions)) {   # Loop through each fitting function
+
+    fit <- fitting_functions[[j]]
+    fit <- fit(data[["distance"]], data[["n2o"]])
+    if(j == "smooth_spline") {
+          f <- function(x) { predict(fit, x)$y }
+    } else {
+          f <- function(x) { predict(fit, x) }
+    }
+    integral <- integrate(f, min(data[["distance"]]), max(data[["distance"]]))
+    results[[paste("LES.averaging.period", k, i, j, sep = "_")]] <- integral$value
+  }
+
+}
+
+}
+
+  
+
+les.n2o <- unlist(results[-c(1:2)])
+meas.n2o <- c(spline = results$n2o_smooth_spline, loess = results$n2o_loess)
+
+
+
+################################################################
+Q.n2o <- outer(meas.n2o*ws.meas, les.n2o*ws.les, FUN = "/")*Q.les  # unit:kg/hr
+################################################################
+
+```
+
+```{r Extraction method#2: emissions estimated from the plume averaged from the whole simulation period}
+
+# load 6th transect
+# THE PROBLEM IS THAT LES simulates enhancements, but aircore measurements are real concentrations
+# extract the enhancements using the code in the following section 4.4
+n2o <- read.csv("D:/1 PhD Studies/3.1 Results of projects/2022_Rotterdam_Campaign/Airborne_meas/0901/n2o.transect6.csv")  # flight 0901 does not show enhancements for ch4
+
+# load LES data
+les <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/extract_les/plume.layers.csv")
+names(les)[names(les)=="x"] <- "lon"
+names(les)[names(les)=="y"] <- "lat"
+les <- les[les$lon>min(n2o$lon) & les$lon<max(n2o$lon) &les$lat>min(n2o$lat) & les$lat<max(n2o$lat),] # select the les grid cells corresponding to 6th transect (downwind transect)
+
+ws <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/extract_les/wind.layers.csv")
+ws <- cbind(ws, ws = sqrt(ws$U_flat^2+ws$V_flat^2))
+
+
+# calculate the emissions using the equation (1) in Ražnjevic et al., 2022
+ws.les <- mean(ws$ws);
+ws.meas <- mean(n2o$ws);
+Q.les <- 22.566292 # kg/h
+
+# The distance [m] per degree of latitude and longitude
+per.lat <- 111320
+per.lon <- function(latitude) {
+  return(111320*cos(latitude*pi/180))
+}
+
+# convert the coordinates to distance along the trajectory
+  lon.zero.6 <- 4.0199
+  lat.zero.6 <- 51.9136
+  coors <- data.frame(lon = lon.zero.6, lat = lat.zero.6)
+  
+# Check if latitudes are NA
+valid_coords <- !is.na(les$lat)
+
+# Calculate distances only for valid coordinates
+distance <- ifelse(
+  valid_coords,
+  sqrt((lon.zero.6 - les$lon)^2 * per.lon(les$lat)^2 + (lat.zero.6 - les$lat)^2 * per.lat^2) *
+    ifelse(les$lon > lon.zero.6, 1, -1),
+  NA
+)
+# Combine the calculated distance with the original data
+les$distance <- distance
+
+
+
+  # Ensure there are no NA or infinite values in the inputs
+  valid_indices <- !is.na(n2o$distance) & !is.na(n2o$n2o) & is.finite(n2o$distance) & is.finite(n2o$n2o)
+
+  # Filter the data to include only valid rows
+  n2o <- n2o[valid_indices, ]
+
+ 
+  # calculate average plume for les
+  df <- les %>%
+  group_by(distance) %>%
+  # Calculate the mean value for each group
+  summarize(n2o = mean(N2O_flat, na.rm = TRUE), ch4 = mean(CH4_flat, na.rm = TRUE)) %>%
+  # Ungroup the data frame
+  ungroup()
+
+  
+# create fitting functions
+fit_smooth_spline <- function(x, y) {
+  smooth.spline(x, y)
+}
+
+fit_loess <- function(x, y) {
+  loess(y ~ x)
+}
+
+fitting_functions <- list(smooth_spline = fit_smooth_spline, loess = fit_loess)
+
+
+# use a loop to calculate the enhancements areas using different fitting functions for three datasets
+datasets <- list(les = df, n2o = n2o)
+
+results <- list()
+
+for (i in names(datasets)) {
+  
+  data <- datasets[[i]]
+  
+    x <- "distance"
+    y <- "n2o"
+
+  for (j in names(fitting_functions)) {# Loop through each fitting function
+    fit <- fitting_functions[[j]]
+    fit <- fit(data[[x]], data[[y]])
+    if(j == "smooth_spline") {
+          f <- function(x) { predict(fit, x)$y }
+          min <- -7000; max <- 5000  # separate bg from the adjacent peak
+    } else {
+          f <- function(x) { predict(fit, x) }
+          min <- min(data[[x]]); max <- 5000  # separate bg from the adjacent peak
+    }
+    integral <- integrate(f, min, max)
+    results[[paste(i, j, sep = "_")]] <- integral$value
+  }
+}
+
+les.n2o <- c(les.spline = results$les_smooth_spline, les.loess = results$les_loess)
+meas.n2o <- c(meas.spline = results$n2o_smooth_spline, meas.loess = results$n2o_loess)
+
+
+################################################################
+Q.n2o <- outer(meas.n2o*ws.meas, les.n2o*ws.les, FUN = "/")*Q.les
+################################################################
+
+```
+
+
+## **4.4 visualize LES and LES&Aircore**
+```{r plot les layer}
+
+library(terra)
+library(viridis)
+
+
+time <- c("12_26_00", "12_35_00", "12_40_00", "12_44_00", "12_47_00") # two sides of upwind transect and three points on the downwind transect
+
+pdf("D:/1 PhD Studies/1 Data/LES/0901/plots/n2o.pdf")
+  for(i in 1:5){
+    
+    vec <- vect(paste0("D:/1 PhD Studies/1 Data/LES/0901/wind/plume_", time[i], ".gpkg"), layer = "layer_25")
+
+coords <- geom(vec)[,c('x', 'y')]
+vec.df <- cbind(terra::as.data.frame(vec), coords)
+
+p <- ggplot()+
+geom_tile(vec.df, mapping = aes(x = x, y = y, fill = N2O_flat), height = 30/per.lat, width = 30/per.lon(vec.df$y))+
+  scale_fill_gradientn(colors = viridis_pal(option = "D")(100000), limits = c(-1.6*10^(-12), 11)) +  # Define color scale
+  ggtitle(paste0(time[i], "_", layers[j]))+
+  labs(fill = "N2O enhancements [ppb]", xlab = "Longitude", ylab = "Latitude")+  # Label for color legend
+  theme_minimal()+
+  theme(
+    plot.title=element_text(size=12, hjust=0.5, vjust=0.5, face='bold'), legend.position = "bottom"
+    )
+
+# p <- ggplot()+
+#   geom_tile(vec.df, mapping = aes(x = x, y = y, fill = CH4_flat), height = 30/per.lat, width = 30/per.lon(vec.df$y))+
+#   scale_fill_gradientn(colors = viridis_pal(option = "D")(100000), limits = c(-4.3*10^(-12),  28)) +  # Define color scale
+#   ggtitle(paste0(time[i], "_", layers[j]))+
+#   labs(fill = "CH4 enhancements [ppb]", xlab = "Longitude", ylab = "Latitude")+  # Label for color legend
+#   theme_minimal()+
+#   theme(
+#     plot.title=element_text(size=12, hjust=0.5, vjust=0.5, face='bold'), legend.position = "bottom"
+#     )
+
+print(p)
+
+  }
+while (!is.null(dev.list()))  dev.off()
+ 
+
+# Normalize the CH4_flat values to the range [0, 1]
+# normalized_values <- (vec$CH4_flat - min(vec$CH4_flat, na.rm = TRUE)) / 
+#                      (max(vec$CH4_flat, na.rm = TRUE) - min(vec$CH4_flat, na.rm = TRUE))
+# 
+# # Generate colors using the viridis palette
+# colors <- viridis_pal(option = "D")(200)
+# 
+# # Plot the data using CH4_flat attribute
+# # First, create a color scheme based on CH4_flat values
+# # Here we use quantile breaks for better visualization of the attribute values
+# 
+# plot(vec, "CH4_flat", col = colors, main = "CH4_flat levels")
+
+```
+
+```{r plot spatial locations of extraced les VS aircore measurements}
+# load airborne measurements
+flight <- '0901'
+wdir <- "D:/1 phd studies/1 data/Rotterdam_campaign_2022/"
+
+data <- read.csv(paste0(wdir, flight, "/AirCore/AirCore_retrieval/AirCore_N2O_CO_CO2_CH4_CO_2022", flight, ".csv"))
+data <- mutate(data, p.H2O = H2O/18*8.3145*Tair/100,  #unit:hPa/mbar
+               pot = Tair*(1000/Ps)^0.286, ws=rWind::uv2ds(U,V)[,2], wd=rWind::uv2ds(U,V)[,1])#;names(data)
+data <- mutate(data, vir.pot = pot*(1+0.61*p.H2O/1000))
+data <- data.frame(date = ISOdate(data$yyyy, data$mm, data$dd, data$hh, data$min, data$sec, tz='UTC'), data)
+data$date <- round(data$date) # the second is not integer
+
+# pick up airborne measurements for harbour areas
+data <- data[
+  data$date>as.POSIXlt("2022-09-01 13:52:00", tz='UTC') & data$date<as.POSIXlt("2022-09-01 14:21:00", tz='UTC'),
+  ]
+
+# load extracted les data
+data.sel <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/2022_0901_aircore.sel.csv")
+data.sel$date <- as.POSIXct(data.sel$date)
+les <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/extract_les/plume.csv")
+les <- cbind(les[,-1], date = data.sel$date)
+les <- cbind(les, pot = les$t_flat+300)
+
+
+# The distance [m] per degree of latitude and longitude
+per.lat <- 111320
+per.lon <- function(latitude) {
+  return(111320*cos(latitude*pi/180))
+}
+
+
+# 2d plot les and aircore versus longlat
+p1 <- ggplot()+
+    geom_tile(les, mapping = aes(x = lon, y = lat), height = 30/per.lat, width = 30/per.lon(les$lat), fill = "red")
+
+p2 <- ggplot()+
+    geom_tile(les, mapping = aes(x = lon, y = lat), height = 30/per.lat, width = 30/per.lon(les$lat), fill = "red")+
+      geom_path(n2o, mapping = aes(x = lon, y = lat), group = 1)
+
+
+tiff("D:/1 PhD Studies/1 Data/LES/0901/plots/les&ac.tiff",  units="mm", width=150, height=75, res=300)
+grid.arrange(p1,p2, ncol =2)
+while (!is.null(dev.list()))  dev.off()
+
+
+# 3d plot les and aircore versus longlat&altitude
+library(plot3D)
+library(rgl)
+
+les <- mutate(les, ws=rWind::uv2ds(U_flat, V_flat)[,2], wd=rWind::uv2ds(U_flat, V_flat)[,1])
+
+tiff("D:/1 PhD Studies/1 Data/LES/0901/plots/les&ac.3d.tiff",  units="mm", width=300, height=200, res=300)
+lines3D(data$lon, data$lat, data$alt, col = "gold", lwd = 2, clab = "ws [m/s]", main = "aircore VS les", xlab = "longitude", ylab = "latitude", zlab = "altitude [m a.g.l.]", ticktype = "detailed", phi = 10, theta = -20)
+scatter3D(les$x, les$y, les$alt_flat, col = "purple", pch=15, bty = "b2",  add = TRUE)
+legend("topright", legend = "aircore-ws [m/s]", col = "gold", pch = 15, bty = "n")
+legend("bottomleft", legend = "les-ws [m/s]", col = "purple", pch = 15, bty = "n")
+while (!is.null(dev.list()))  dev.off()
+```
+
+```{r plot LES VS airborne for temp and pressure and concentrations}
+
+# load airborne measurements
+flight <- '0901'
+wdir <- "D:/1 phd studies/1 data/Rotterdam_campaign_2022/"
+
+data <- read.csv(paste0(wdir, flight, "/AirCore/AirCore_retrieval/AirCore_N2O_CO_CO2_CH4_CO_2022", flight, ".csv"))
+data <- mutate(data, p.H2O = H2O/18*8.3145*Tair/100,  #unit:hPa/mbar
+               pot = Tair*(1000/Ps)^0.286, ws=rWind::uv2ds(U,V)[,2], wd=rWind::uv2ds(U,V)[,1])#;names(data)
+data <- mutate(data, vir.pot = pot*(1+0.61*p.H2O/1000))
+data <- data.frame(date = ISOdate(data$yyyy, data$mm, data$dd, data$hh, data$min, data$sec, tz='UTC'), data)
+data$date <- round(data$date) # the second is not integer
+
+# pick up airborne measurements for harbour areas
+data <- data[
+  data$date>as.POSIXlt("2022-09-06 12:24:00", tz='UTC') & data$date<as.POSIXlt("2022-09-06 12:48:00", tz='UTC'),
+  ]
+
+
+# load extracted les data
+data.sel <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/2022_0901_aircore.sel.csv")
+data.sel$date <- as.POSIXct(data.sel$date, tz = "UTC")
+les.temp <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/wind/temp.csv")
+les.pre <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/wind/pressure.csv") # unit of pressure is Pa and unit of temp is kelvin
+p <- les.pre$p_flat/100 # convert the unit of Pa to hpa
+
+les <- merge(les.temp, les.pre, by = c("date","alt_flat","x","y"))
+les <- cbind(les[,-1], date = data.sel$date)
+pot <- les$t_flat+300 # kelvin
+tair <- pot*(p/1000)^0.286 # kelvin
+e <- les$vapor_flat*p/(0.622+les$vapor_flat) # hpa
+es <- 6.11*10^(2.5*10^6/461.52*(1/273.15-1/tair)) # hpa; Clausius-Clapeyron relation.
+es.1 <- 6.1078*10^(17.2693882*(tair-273.16)/(tair-35.86)) # the equation proposed by Murray (1967)
+les <- cbind(les, p, pot, tair, e, es, es.1) # temp and pot.temp are in kelvin
+
+
+# plot time series of les VS aircore for meteos
+data$date <- as.POSIXct(data$date, tz = "UTC")
+les$date <- as.POSIXct(les$date, tz = "UTC")
+data.sel <- merge(data, data.sel, by = "date")
+
+
+############################# temp ##############################################
+p1 <- ggplot(mapping = aes(x = date))+
+  geom_line(data, mapping = aes(y = Tair))+
+  geom_point(data.sel, mapping = aes(y = Tair), colour = "gold")+
+  geom_point(les, mapping = aes(y = tair), colour = "purple")+
+  geom_line(les, mapping = aes(y = tair), colour = "purple")+
+  xlab("Time [UTC]")
+  
+
+p2 <- ggplot()+
+  geom_line(data, mapping = aes(x = date, y = pot))+
+  geom_point(data.sel, mapping = aes(x = date, y = pot), colour = "gold")+
+  geom_point(les, mapping = aes(x = date, y = pot), colour = "purple")+
+  geom_line(les, mapping = aes(x = date, y = pot), colour = "purple")+
+  xlab("Time [UTC]")
+
+tiff("D:/1 PhD Studies/1 Data/LES/0901/plots/time.series.les&ac.temp.tiff",  units="mm", width=150, height=150, res=300)
+grid.arrange(p1,p2, nrow =2, top = "without assimilation")
+while (!is.null(dev.list()))  dev.off()
+
+
+##################################### pressure ######################################
+p1 <- ggplot(mapping = aes(x = date))+
+  geom_line(data, mapping = aes(y = p.H2O))+
+  geom_point(data.sel, mapping = aes(y = p.H2O), colour = "gold")+
+  geom_point(les, mapping = aes(y = e), colour = "purple")+
+  geom_line(les, mapping = aes(y = e), colour = "purple")+
+  xlab("Time [UTC]")
+
+p2 <- ggplot()+
+  geom_line(data, mapping = aes(x = date, y = Ps))+
+  geom_point(data.sel, mapping = aes(x = date, y = Ps), colour = "gold")+
+  geom_point(les, mapping = aes(x = date, y = p), colour = "purple")+
+  geom_line(les, mapping = aes(x = date, y = p), colour = "purple")+
+  xlab("Time [UTC]")
+
+
+tiff("D:/1 PhD Studies/1 Data/LES/0901/plots/time.series.les&ac.pressure.tiff",  units="mm", width=150, height=150, res=300)
+grid.arrange(p1,p2, nrow =2, top = "without assimilation")
+while (!is.null(dev.list()))  dev.off()
+
+###############################################################
+# plot time series of LES VS aircore for N2O&CH4 concentrations
+###############################################################
+
+# THE PROBLEM IS THAT LES simulates enhancements, but aircore measurements are real concentrations
+# extract the enhancements using the transects made by the rscript "C:/Users/Xin/Dropbox/Xin/Rscripts/manuscript#3/SI_Plot_N2O_CH4_along_transects.R"
+
+les <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/extract_les/plume.csv") 
+data.sel <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/2022_0901_aircore.sel.csv")
+data.sel$date <- as.POSIXct(data.sel$date, tz = "UTC")
+les <- cbind(les[,-1], date = data.sel$date)
+
+# n2o
+condition <- transect6$distance<(-7500) | (transect6$distance>0 & transect6$distance<5000)
+ac.sel <- subset(transect6, condition)
+lm <- lm(N2O.ac.ppb~distance, ac.sel); summary(lm)
+intercept <- coefficients(lm)[[1]]; slope <- coefficients(lm)[[2]]
+transect6 <- mutate(transect6, bg = intercept+slope*distance)
+transect6 <- mutate(transect6, n2o = N2O.ac.ppb - bg)
+
+les$date <- as.POSIXct(les$date, tz = "UTC");
+les <- les[les$date>=as.POSIXct("2022-09-06 12:39:", tz = "UTC"),]
+transect6$date <- as.POSIXct(transect6$date, tz = "UTC")
+
+transect6.sel <- merge(transect6, data.sel, by = "date")
+
+p1 <- ggplot()+
+  geom_line(transect6, mapping = aes(x = date, y = n2o))+
+  #geom_point(transect6.sel, mapping = aes(x = date, y = n2o), colour = "gold")+
+  geom_point(les, mapping = aes(x = date, y = N2O_flat), colour = "purple")+
+  geom_line(les, mapping = aes(x = date, y = N2O_flat), colour = "purple")+
+  labs(x = "Time [UTC]", y = bquote(''*N[2]*O*' enhancements [ppb]'))
+  
+
+# ch4
+condition <- transect6$distance>(-5000) & transect6$distance<5000
+ac.sel <- subset(transect6, condition)
+bg <- mean(ac.sel$CH4.ac.ppb) # use mean as bg
+transect6 <- cbind(transect6, bg=bg, ch4 = transect6$CH4.ac.ppb - bg)
+
+########### plot for validation ###############
+# Rectangle data
+rect_data <- data.frame(
+  xmin = -5000,
+  xmax = 5000,
+  ymin = 2010,
+  ymax = 2030
+)
+ggplot()+
+  geom_point(transect6, mapping =aes(x = distance, y = CH4.ac.ppb))+
+  geom_hline(yintercept = bg)+
+  geom_rect(rect_data, mapping = aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax), alpha = 0.2, fill = "gold") 
+################################################
+
+les$date <- as.POSIXct(les$date, tz = "UTC");
+les <- les[les$date>=as.POSIXct("2022-09-06 12:39:", tz = "UTC"),]
+transect6$date <- as.POSIXct(transect6$date, tz = "UTC")
+
+transect6.sel <- merge(transect6, data.sel, by = "date")
+
+ggplot()+
+  geom_point(transect6, mapping = aes(x = date, y = ch4))+
+  geom_point(transect6.sel, mapping = aes(x = date, y = ch4), colour = "gold")+
+  geom_point(les, mapping = aes(x = date, y = CH4_flat), colour = "purple")+
+  geom_line(les, mapping = aes(x = date, y = CH4_flat), colour = "purple")+
+  labs(x = "Time [UTC]", y = bquote(''*CH[4]*' enhancements [ppb]'))
+  
+
+```
+
+
+
+I am suspicious that if the observed plume can be comparable to the modelled plume by LES. Determine the enhancements using the low concentrations at two sides of the downwind transect by subtracting the bg, which is a linear function rather than a constant value.
+
+```{r make animation of les modelled plume over time for the downwind transect}
+
+```
+
+## **4.5 post analysis and visualization**
+```{r visualize the extracted LES layers for each time stamp VS aircore measurements}
+
+############################
+# load airborne measurements
+############################
+sapply(list.files(pattern="[.]R$", path="c:/Users/xin/Dropbox/xin/Rscripts/functions", full.names=TRUE), source)
+data <- read.csv("D:/1 PhD Studies/1 Data/Rotterdam_campaign_2022/AirCore measurements datasets/AirCore_N2O_CO_CO2_CH4_CO_20220901.csv")
+
+data <- mutate(data, pot = Tair*(1000/Ps)^0.286, ws=rWind::uv2ds(U,V)[,2], wd=rWind::uv2ds(U,V)[,1]); names(data)
+data <- data.frame(date = ISOdate(data$yyyy, data$mm, data$dd, data$hh, data$min, data$sec, tz='UTC'),data)
+  
+data <- mutate(data, p.H2O = H2O/18*8.3145*Tair/100,  #unit:hPa/mbar
+               pot = Tair*(1000/Ps)^0.286, ws=rWind::uv2ds(U,V)[,2], wd=rWind::uv2ds(U,V)[,1])#;names(data)
+  
+df.0901 <- mutate(data, flag = case_when(
+      # following the wind direction, number the flight leg
+      time>(12*3600+26*60) & time<(12*3600+35*60+12) ~ "1st.transect",
+      time>(12*3600+39*60+25) & time<(12*3600+48*60) ~ "2nd.transect",
+      time>(12*3600+50*60+32) & time<(12*3600+58*60+50) ~ "3rd.transect",
+      time>(13*3600+60+20) & time<(13*3600+11*60+23) ~ "4th.transect",
+      time>(13*3600+14*60+6) & time<(13*3600+24*60) ~ "5th.transect",
+      time>(13*3600+27*60+30) & time<(13*3600+37*60) ~ "6th.transect",
+    ))
+    
+  wd <- df.0901$wd[!is.na(df.0901$flag)]
+  
+  transect.1and2 <- df.0901[which(df.0901$flag=='2nd.transect' | df.0901$flag=='1st.transect'),]
+  transect6 <- df.0901[which(df.0901$flag=='2nd.transect'),]
+  
+#################################### pressure & temperature ##################################################
+temp <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/extract_les/temp.ac.csv");
+pre <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/extract_les/pressure.ac.csv");
+
+les <- merge(temp[,-1], pre[,-1], by = c("date", "lon", "lat", "alt", "layer"))
+p <- les$p_flat/100 # convert the unit of Pa to hpa
+pot <- les$t+300 # kelvin
+tair <- pot*(p/1000)^0.286 # kelvin
+e = les$vapor*p/(0.622+les$vapor) # hpa
+es <- 6.11*10^(2.5*10^6/461.52*(1/273.15-1/tair)) # hpa; Clausius-Clapeyron relation.
+es.1 <- 6.1078*10^(17.2693882*(tair-273.16)/(tair-35.86)) # the equation proposed by Murray (1967)
+RH <- e/es*100
+les <- cbind(les, p, pot, tair, e, es, es.1, RH) # temp and pot.temp are in kelvin
+
+les.mean <- group_by(les, lat, layer) %>% summarise(
+  p = mean(p), pot = mean(pot), tair =mean(tair), e = mean(e), es = mean(es), es.1 = mean(es.1), RH = mean(RH))
+
+
+ggplot()+
+  geom_point(les, mapping = aes(x = lat, y = p, group = date, colour = date))+
+  geom_point(transect6, mapping = aes(x = lat, y = Ps), colour = "gold")+
+  #geom_point(les.mean, mapping = aes(x = lat, y = p))+
+  theme(legend.title = element_blank(), legend.position = "bottom")
+
+ggplot()+
+  geom_point(les, mapping = aes(x = lat, y = e, group = date, colour = date))+
+  geom_line(transect6, mapping = aes(x = lat, y = p.H2O), colour = "gold")+
+  #geom_point(les.mean, mapping = aes(x = lat, y = e))+
+  facet_col(~layer)+
+  theme(legend.title = element_blank(), legend.position = "bottom")+
+  labs(y = "water pressure")
+
+ggplot()+
+  geom_point(les, mapping = aes(x = lat, y = tair, group = date, colour = date))+
+  geom_line(transect6, mapping = aes(x = lat, y = Tair), colour = "gold")+
+  #geom_point(les.mean, mapping = aes(x = lat, y = tair))+
+  facet_row(~layer)+
+  theme(legend.title = element_blank(), legend.position = "bottom")+
+  labs(y = "temperature")
+
+ggplot()+
+  geom_point(les, mapping = aes(x = lat, y = pot, group = date, colour = date))+
+  geom_line(transect6, mapping = aes(x = lat, y = pot), colour = "gold")+
+  #geom_point(les.mean, mapping = aes(x = lat, y = pot))+
+  facet_row(~layer)+
+  theme(legend.title = element_blank(), legend.position = "bottom")+
+  labs(y = "potential.temp")
+
+###################################### wind ######################################
+wind <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/extract_les/wind.ac.csv");
+les <- mutate(wind, ws=rWind::uv2ds(U_flat,V_flat)[,2], wd=rWind::uv2ds(U_flat,V_flat)[,1])#;names(data)
+les.mean <- group_by(les, lat, layer) %>% summarise(
+  ws = mean(ws), wd = mean.cir(wd))
+
+ggplot()+
+  geom_line(les, mapping = aes(x = lat, y = ws, group = date, colour = date))+
+  geom_line(transect6, mapping = aes(x = lat, y = ws), colour = "gold")+
+  #geom_point(les.mean, mapping = aes(x = lat, y = ws))+
+  facet_row(~layer)+
+  theme(legend.title = element_blank(), legend.position = "bottom")+
+  labs(y = "ws")
+
+ggplot()+
+  geom_line(les, mapping = aes(x = lat, y = wd, group = date, colour = date))+
+  geom_line(transect6, mapping = aes(x = lat, y = wd), colour = "gold")+
+  #geom_point(les.mean, mapping = aes(x = lat, y = wd))+
+  facet_row(~layer)+
+  theme(legend.title = element_blank(), legend.position = "bottom")+
+  labs(y = "wd")
+
+###################################### concentration enhancements ######################################
+les <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/extract_les/plume.ac.csv") # UNIT is ppb for N2O and CH4
+les.mean <- group_by(les, lat, layer) %>% summarise(
+  N2O = mean(N2O_flat), CH4 = mean(CH4_flat), n2o.median = median(N2O_flat), ch4.median = median(CH4_flat))
+
+# THE PROBLEM IS THAT LES simulates enhancements, but aircore measurements are real concentrations
+# extract the enhancements using the transects made by the rscript "C:/Users/Xin/Dropbox/Xin/Rscripts/manuscript#3/SI_Plot_N2O_CH4_along_transects.R"
+
+# n2o
+condition <- transect6$distance<(-10000) | (transect6$distance>(-5000) & transect6$distance<5000)
+ac.sel <- subset(transect6, condition)
+lm <- lm(N2O.ac.ppb~distance, ac.sel); summary(lm)
+intercept <- coefficients(lm)[[1]]; slope <- coefficients(lm)[[2]]
+transect6 <- mutate(transect6, bg = intercept+slope*distance)
+transect6 <- mutate(transect6, n2o = N2O.ac.ppb - bg)
+
+ggplot()+
+  geom_line(transect6, mapping = aes(x = lat, y = n2o), colour = "gold")+
+  geom_point(les, mapping = aes(x = lat, y = N2O_flat, group = date, colour = date))+
+  geom_point(les.mean, mapping = aes(x = lat, y = N2O), colour = "black")+
+  facet_row(~layer)+
+  theme(legend.title = element_blank(), legend.position = "bottom")+
+  labs(x = "lat", y = bquote(''*N[2]*O*' enhancements [ppb]'))
+
+# ch4
+condition <- transect6$distance>(-5000) & transect6$distance<5000
+ac.sel <- subset(transect6, condition)
+bg <- mean(ac.sel$CH4.ac.ppb) # use mean as bg
+transect6 <- cbind(transect6, bg=bg, ch4 = transect6$CH4.ac.ppb - bg)
+
+ggplot()+
+  geom_line(les, mapping = aes(x = lat, y = CH4_flat, group = date, colour = date))+
+  geom_line(transect6, mapping = aes(x = lat, y = ch4), colour = "gold")+
+  #geom_point(les.mean, mapping = aes(x = lat, y = CH4))+
+  #geom_point(les.mean, mapping = aes(x = lat, y = ch4.median))+
+  facet_row(~layer)+
+  theme(legend.title = element_blank(), legend.position = "bottom")+
+  labs(x = "lat", y = bquote(''*CH[4]*' enhancements [ppb]'))
+
+```
+
+```{r plot concentrations VS time}
+
+les <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/extract_les/plume.ac.add30.csv") # UNIT is ppb for N2O and CH4
+les$date <- as.POSIXct(les$date, tz = "UTC")
+les <- les[les$date>as.POSIXct("2022-09-06 12:39:00", tz = "UTC"),]
+les$factor <- as.character(les$date)
+
+les.mean <- group_by(les, date) %>% 
+  summarise(n2o.mean = mean(N2O_flat), n2o.median = median(N2O_flat), ch4.mean = mean(CH4_flat), ch4.median = median(CH4_flat))
+
+# n2o
+melt <- melt(les.mean, id.vars = "date", measure.vars = c('n2o.mean', 'n2o.median'))
+
+condition <- transect6$distance<(-10000) | (transect6$distance>(-5000) & transect6$distance<5000)
+ac.sel <- subset(transect6, condition)
+lm <- lm(N2O.ac.ppb~distance, ac.sel); summary(lm)
+intercept <- coefficients(lm)[[1]]; slope <- coefficients(lm)[[2]]
+transect6 <- mutate(transect6, bg = intercept+slope*distance)
+transect6 <- mutate(transect6, n2o = N2O.ac.ppb - bg)
+
+ggplot()+
+  geom_line(transect6, mapping = aes(x = date, y = n2o), colour = "gold")+
+  
+  geom_point(les, mapping = aes(x = date, y = N2O_flat), colour = 'purple')+
+  geom_line(melt, mapping = aes(x = date, y = value, colour = variable))+
+  facet_row(~layer)+
+  theme(legend.title = element_blank(), legend.position = c(0.8, 0.7))+
+  labs(x = "Time [UTC]", y = bquote(''*N[2]*O*' enhancements [ppb]'))
+
+
+
+
+
+# ch4
+melt <- melt(les.mean, id.vars = "date", measure.vars = c('ch4.mean', 'ch4.median'))
+
+condition <- transect6$distance>(-5000) & transect6$distance<5000
+ac.sel <- subset(transect6, condition)
+bg <- mean(ac.sel$CH4.ac.ppb) # use mean as bg
+transect6 <- cbind(transect6, bg=bg, ch4 = transect6$CH4.ac.ppb - bg)
+
+ggplot()+
+  geom_line(transect6, mapping = aes(x = date, y = ch4), colour = "gold")+
+  
+  geom_point(les, mapping = aes(x = date, y = CH4_flat), colour = 'purple')+
+  geom_line(melt, mapping = aes(x = date, y = value, colour = variable))+
+  facet_row(~layer)+facet_zoom(ylim = c(-1, 4))+
+  theme(legend.title = element_blank(), legend.position = c(0.8, 0.7))+
+  labs(x = "Time [UTC]", y = bquote(''*CH[4]*' enhancements [ppb]'))
+```
+
+```{r process for 2nd extraction methods}
+
+
+################################# instantaneous plume ###############################################
+n2o <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/results/n2o.layers.csv")
+
+  df <- n2o
+  
+  colnames(df)[1] <- "meas"
+  melt <- melt(df, id.vars = "meas")
+  str <- strsplit(as.character(melt$variable), "_")
+  datetime <- sapply(str, function(x) x[1]);
+  datetime <- as.POSIXct(sub("^X", "", datetime), format = "%Y.%m.%d.%H.%M.%S", tz = "UTC")
+  fitting <- sapply(str, function(x) x[2]);
+  fitting[which(fitting=="smooth")] <- "spline"
+  df <- cbind(melt, datetime, fitting)
+  
+  n2o <- df
+
+
+  
+  
+results <- list()
+stats <- NULL
+
+  df <- n2o
+  
+  for(j in unique(df$fitting)){
+    
+    for(k in unique(df$meas)){
+      
+      df1 <- df[df$meas==k & df$fitting==j, ]
+      
+      mean <- mean(df1$value, na.rm = TRUE);
+      median <- median(df1$value, na.rm = TRUE);
+      min <- min(df1$value, na.rm = TRUE);
+      max <- max(df1$value, na.rm = TRUE);
+      sd <- sd(df1$value, na.rm = TRUE)
+      
+      name <- paste("n2o", 'LES', j, 'meas', k, sep = "_")
+
+      stats <- rbind(
+        stats, data.frame(
+          species="n2o", LES=j, meas=k, min=min, max=max, mean=mean, sd=sd, median=median, index=name
+          )
+      )
+      
+      df1 <- cbind(df1, index = name)
+      results[[name]] <- df1
+    }
+  }
+
+
+
+
+
+############### plume averaged from different time intervals #################################
+ n2o <- read.csv("D:/1 PhD Studies/1 Data/LES/0901/results/n2o.layers.diff.interval.csv")
+
+# change the format of the data
+   df <- n2o
+   
+   colnames(df)[1] <- "meas"
+   melt <- melt(df, id.vars = "meas")
+   str <- strsplit(as.character(melt$variable), "_")
+   interval <- sapply(str, function(x) x[2])
+   datetime <- sapply(str, function(x) x[3]);
+   datetime <- as.POSIXct(sub("^X", "", datetime), format = "%Y.%m.%d.%H.%M.%S", tz = "UTC")
+   fitting <- sapply(str, function(x) x[4]);
+   fitting[which(fitting=="smooth")] <- "spline"
+   df <- cbind(melt, interval, datetime, fitting)
+   
+  n2o <- df
+ 
+ 
+  
+# analyze the stats of the emissions  
+ results <- list()
+ stats <- NULL
+
+   df <- n2o
+   
+   for(j in unique(df$fitting)){
+     
+     for(k in unique(df$meas)){
+       
+       for(m in unique(df$interval)){
+         df1 <- df[df$meas==k & df$fitting==j & df$interval==m, ]
+         
+         mean <- mean(df1$value, na.rm = TRUE);
+         median <- median(df1$value, na.rm = TRUE);
+         min <- min(df1$value, na.rm = TRUE);
+         max <- max(df1$value, na.rm = TRUE);
+         sd <- sd(df1$value, na.rm = TRUE)
+         
+         name <- paste("n2o", 'LES', m, j, 'meas', k, sep = "_")
+         
+         stats <- rbind(
+           stats, data.frame(
+             species="n2o", LES=j, interval=m, meas=k, min=min, max=max, mean=mean, sd=sd, median=median, index=name
+           )
+         )
+         
+         df1 <- cbind(df1, index = name)
+         results[[name]] <- df1
+         
+       }
+     }
+   }
+ 
+ 
+ 
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
